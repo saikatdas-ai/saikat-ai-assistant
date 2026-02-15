@@ -2,10 +2,13 @@ import os
 import telebot
 import google.generativeai as genai
 from datetime import datetime
+import threading
+import time
 
 # ================= ENV =================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+YOUR_CHAT_ID = os.getenv("YOUR_CHAT_ID")  # your personal Telegram chat ID
 
 # ================= GEMINI =================
 genai.configure(api_key=GEMINI_API_KEY)
@@ -16,73 +19,38 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 
 # =========================================================
-# PHASE-2 CLIENT SCOUT ENGINE (STRUCTURE READY FOR REAL DATA)
+# CLIENT SCOUT PLACEHOLDERS (REAL APIS IN NEXT PHASE)
 # =========================================================
 
 def linkedin_leads():
-    """
-    Placeholder for future real LinkedIn API search.
-    Phase-3 will connect real discovery.
-    """
     return [
-        {
-            "name": "Arjun Kapoor",
-            "role": "Brand Manager – Adidas India",
-            "why": "Recent athlete campaign announcement",
-            "action": "Premium outreach",
-        },
-        {
-            "name": "Neha Sharma",
-            "role": "Marketing Director – ILT20 UAE",
-            "why": "Upcoming league season planning",
-            "action": "Professional intro",
-        },
+        {"name": "Arjun Kapoor", "role": "Brand Manager – Adidas India", "why": "New athlete campaign", "action": "Premium outreach"},
+        {"name": "Neha Sharma", "role": "Marketing Director – ILT20 UAE", "why": "League season prep", "action": "Professional intro"},
     ]
 
 
 def instagram_leads():
-    """
-    Placeholder for Instagram campaign discovery.
-    Will be replaced by real tracking in Phase-3.
-    """
     return [
-        {
-            "name": "Rohit Verma",
-            "role": "Creative Producer – Sports Campaign Studio",
-            "why": "Posted athlete shoot BTS yesterday",
-            "action": "Warm relationship intro",
-        },
-        {
-            "name": "Sana Ali",
-            "role": "Brand Executive – Puma India",
-            "why": "Tagged in new sports visual campaign",
-            "action": "Premium short outreach",
-        },
-        {
-            "name": "David Khan",
-            "role": "League Media Manager – T10 Global",
-            "why": "Season media prep started",
-            "action": "Professional availability note",
-        },
+        {"name": "Rohit Verma", "role": "Creative Producer – Sports Studio", "why": "Athlete BTS post", "action": "Warm intro"},
+        {"name": "Sana Ali", "role": "Brand Executive – Puma India", "why": "Tagged in campaign", "action": "Premium short outreach"},
+        {"name": "David Khan", "role": "League Media – T10 Global", "why": "Media prep started", "action": "Availability note"},
     ]
 
 
 # =========================================================
-# DASHBOARD BUILDER
+# DASHBOARD GENERATION
 # =========================================================
 
 def generate_daily_dashboard():
     today = datetime.now().strftime("%d %b %Y")
-
     leads = linkedin_leads() + instagram_leads()
 
     dashboard = f"🎯 *DAILY CLIENT SCOUT — {today}*\n\n"
 
     for i, lead in enumerate(leads[:5], start=1):
-        # Use Gemini to generate personalized outreach text
         try:
             prompt = f"""
-Write a SHORT professional outreach message for:
+Write a short professional outreach message.
 
 Name: {lead['name']}
 Role: {lead['role']}
@@ -90,26 +58,49 @@ Reason: {lead['why']}
 
 Photographer credentials:
 • 15+ years IPL & BCCI
-• International cricket & leagues
+• International leagues
 • SBI Life campaign with Pant & Jadeja
-Tone: premium, human, confident, not salesy.
+
+Tone: premium, human, confident.
 Max 3 lines.
 """
             response = model.generate_content(prompt)
-            message_text = response.text.strip()
+            msg = response.text.strip()
         except Exception:
-            message_text = "⚠️ Message generation error."
+            msg = "⚠️ Message generation error."
 
         dashboard += (
             f"{i}️⃣ *{lead['name']}*\n"
             f"Role: {lead['role']}\n"
             f"Why: {lead['why']}\n"
             f"Action: {lead['action']}\n\n"
-            f"_Message ready:_\n{message_text}\n\n"
-            f"────────────\n\n"
+            f"_Message ready:_\n{msg}\n\n────────────\n\n"
         )
 
     return dashboard
+
+
+# =========================================================
+# AUTO DAILY SCHEDULER (10:00 AM)
+# =========================================================
+
+def daily_scheduler():
+    while True:
+        now = datetime.now()
+
+        if now.hour == 10 and now.minute == 0:
+            try:
+                dashboard = generate_daily_dashboard()
+                bot.send_message(YOUR_CHAT_ID, dashboard, parse_mode="Markdown")
+                time.sleep(60)  # avoid duplicate send
+            except Exception:
+                pass
+
+        time.sleep(20)
+
+
+# Run scheduler in background
+threading.Thread(target=daily_scheduler, daemon=True).start()
 
 
 # =========================================================
@@ -120,22 +111,21 @@ Max 3 lines.
 def welcome(message):
     bot.reply_to(
         message,
-        "🤖 *AI Business Assistant Ready*\n\n"
-        "Commands:\n"
-        "/leads → Today’s client dashboard\n"
-        "/ask → Ask anything\n",
+        "🤖 *AI Business Assistant Active*\n\n"
+        "/leads → Get latest client dashboard\n"
+        "Auto-report → Every day at 10:00 AM",
         parse_mode="Markdown",
     )
 
 
 @bot.message_handler(commands=["leads"])
-def send_leads(message):
+def manual_leads(message):
     dashboard = generate_daily_dashboard()
     bot.send_message(message.chat.id, dashboard, parse_mode="Markdown")
 
 
 @bot.message_handler(func=lambda m: True)
-def chat_with_ai(message):
+def chat_ai(message):
     try:
         response = model.generate_content(message.text)
         reply = response.text
@@ -145,5 +135,5 @@ def chat_with_ai(message):
     bot.reply_to(message, reply)
 
 
-print("✅ AI Assistant running (Phase-2)…")
+print("✅ AI Assistant running with Hybrid Automation…")
 bot.infinity_polling()
