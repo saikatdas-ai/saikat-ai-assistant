@@ -3,62 +3,128 @@ import telebot
 import google.generativeai as genai
 from datetime import datetime
 
-# === ENV VARIABLES ===
+# ================= ENV =================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# === CONFIGURE GEMINI ===
+# ================= GEMINI =================
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-1.5-flash")
 
-# === TELEGRAM BOT ===
+# ================= TELEGRAM =================
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 
-# === DASHBOARD GENERATOR (TEMP DEMO DATA) ===
+# =========================================================
+# PHASE-2 CLIENT SCOUT ENGINE (STRUCTURE READY FOR REAL DATA)
+# =========================================================
+
+def linkedin_leads():
+    """
+    Placeholder for future real LinkedIn API search.
+    Phase-3 will connect real discovery.
+    """
+    return [
+        {
+            "name": "Arjun Kapoor",
+            "role": "Brand Manager – Adidas India",
+            "why": "Recent athlete campaign announcement",
+            "action": "Premium outreach",
+        },
+        {
+            "name": "Neha Sharma",
+            "role": "Marketing Director – ILT20 UAE",
+            "why": "Upcoming league season planning",
+            "action": "Professional intro",
+        },
+    ]
+
+
+def instagram_leads():
+    """
+    Placeholder for Instagram campaign discovery.
+    Will be replaced by real tracking in Phase-3.
+    """
+    return [
+        {
+            "name": "Rohit Verma",
+            "role": "Creative Producer – Sports Campaign Studio",
+            "why": "Posted athlete shoot BTS yesterday",
+            "action": "Warm relationship intro",
+        },
+        {
+            "name": "Sana Ali",
+            "role": "Brand Executive – Puma India",
+            "why": "Tagged in new sports visual campaign",
+            "action": "Premium short outreach",
+        },
+        {
+            "name": "David Khan",
+            "role": "League Media Manager – T10 Global",
+            "why": "Season media prep started",
+            "action": "Professional availability note",
+        },
+    ]
+
+
+# =========================================================
+# DASHBOARD BUILDER
+# =========================================================
+
 def generate_daily_dashboard():
     today = datetime.now().strftime("%d %b %Y")
 
-    dashboard = f"""
-🎯 *DAILY CLIENT SCOUT — {today}*
+    leads = linkedin_leads() + instagram_leads()
 
-1️⃣ *Rahul Mehta*  
-Role: Brand Manager – Puma India  
-Why: New athlete campaign announced  
-Action: Premium outreach  
+    dashboard = f"🎯 *DAILY CLIENT SCOUT — {today}*\n\n"
 
-_Message ready:_  
-Hi Rahul, I noticed Puma’s recent athlete campaign direction.  
-I’ve been covering IPL, BCCI & major sports campaigns for 15+ years.  
-Would love to collaborate if any visual support is needed.
+    for i, lead in enumerate(leads[:5], start=1):
+        # Use Gemini to generate personalized outreach text
+        try:
+            prompt = f"""
+Write a SHORT professional outreach message for:
 
-────────────
+Name: {lead['name']}
+Role: {lead['role']}
+Reason: {lead['why']}
 
-2️⃣ *Sarah Khan*  
-Role: Marketing Head – UAE T20 League  
-Why: Upcoming season preparation  
-Action: Professional intro  
-
-_Message ready:_  
-Hello Sarah, sharing a quick introduction.  
-I’m a sports photographer working across IPL, international cricket & commercial campaigns.  
-Happy to support your upcoming season if visuals are required.
-
-────────────
-
-⚡ 3 more leads arriving in Phase-2
+Photographer credentials:
+• 15+ years IPL & BCCI
+• International cricket & leagues
+• SBI Life campaign with Pant & Jadeja
+Tone: premium, human, confident, not salesy.
+Max 3 lines.
 """
+            response = model.generate_content(prompt)
+            message_text = response.text.strip()
+        except Exception:
+            message_text = "⚠️ Message generation error."
+
+        dashboard += (
+            f"{i}️⃣ *{lead['name']}*\n"
+            f"Role: {lead['role']}\n"
+            f"Why: {lead['why']}\n"
+            f"Action: {lead['action']}\n\n"
+            f"_Message ready:_\n{message_text}\n\n"
+            f"────────────\n\n"
+        )
+
     return dashboard
 
 
-# === MESSAGE HANDLER ===
+# =========================================================
+# TELEGRAM COMMANDS
+# =========================================================
+
 @bot.message_handler(commands=["start", "help"])
-def send_welcome(message):
+def welcome(message):
     bot.reply_to(
         message,
-        "🤖 AI Assistant Ready.\n\nCommands:\n"
-        "/leads → Show today’s client dashboard\n"
-        "/ask → Ask anything",
+        "🤖 *AI Business Assistant Ready*\n\n"
+        "Commands:\n"
+        "/leads → Today’s client dashboard\n"
+        "/ask → Ask anything\n",
+        parse_mode="Markdown",
     )
 
 
@@ -69,11 +135,9 @@ def send_leads(message):
 
 
 @bot.message_handler(func=lambda m: True)
-def handle_message(message):
-    user_text = message.text
-
+def chat_with_ai(message):
     try:
-        response = model.generate_content(user_text)
+        response = model.generate_content(message.text)
         reply = response.text
     except Exception:
         reply = "⚠️ Gemini connection error."
@@ -81,5 +145,5 @@ def handle_message(message):
     bot.reply_to(message, reply)
 
 
-print("✅ AI Assistant running...")
+print("✅ AI Assistant running (Phase-2)…")
 bot.infinity_polling()
