@@ -1,51 +1,85 @@
 import os
 import telebot
 import google.generativeai as genai
+from datetime import datetime
 
-# ===== ENV =====
+# === ENV VARIABLES ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-if not TELEGRAM_TOKEN:
-    raise ValueError("Missing TELEGRAM_TOKEN")
-
-if not GEMINI_API_KEY:
-    raise ValueError("Missing GEMINI_API_KEY")
-
-# ===== GEMINI CONFIG =====
+# === CONFIGURE GEMINI ===
 genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel("gemini-1.5-flash")
 
-# --- Find a valid text model dynamically ---
-available_models = [
-    m.name for m in genai.list_models()
-    if "generateContent" in m.supported_generation_methods
-]
-
-if not available_models:
-    raise RuntimeError("No compatible Gemini models found for this API key.")
-
-MODEL_NAME = available_models[0]  # pick first valid model
-model = genai.GenerativeModel(MODEL_NAME)
-
-print(f"Using Gemini model: {MODEL_NAME}")
-
-# ===== TELEGRAM =====
+# === TELEGRAM BOT ===
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 
-def ask_gemini(prompt: str) -> str:
-    try:
-        response = model.generate_content(prompt)
-        return response.text or "⚠️ Empty Gemini reply."
-    except Exception as e:
-        return "⚠️ Gemini error: " + str(e)
+# === DASHBOARD GENERATOR (TEMP DEMO DATA) ===
+def generate_daily_dashboard():
+    today = datetime.now().strftime("%d %b %Y")
+
+    dashboard = f"""
+🎯 *DAILY CLIENT SCOUT — {today}*
+
+1️⃣ *Rahul Mehta*  
+Role: Brand Manager – Puma India  
+Why: New athlete campaign announced  
+Action: Premium outreach  
+
+_Message ready:_  
+Hi Rahul, I noticed Puma’s recent athlete campaign direction.  
+I’ve been covering IPL, BCCI & major sports campaigns for 15+ years.  
+Would love to collaborate if any visual support is needed.
+
+────────────
+
+2️⃣ *Sarah Khan*  
+Role: Marketing Head – UAE T20 League  
+Why: Upcoming season preparation  
+Action: Professional intro  
+
+_Message ready:_  
+Hello Sarah, sharing a quick introduction.  
+I’m a sports photographer working across IPL, international cricket & commercial campaigns.  
+Happy to support your upcoming season if visuals are required.
+
+────────────
+
+⚡ 3 more leads arriving in Phase-2
+"""
+    return dashboard
 
 
-@bot.message_handler(func=lambda message: True)
+# === MESSAGE HANDLER ===
+@bot.message_handler(commands=["start", "help"])
+def send_welcome(message):
+    bot.reply_to(
+        message,
+        "🤖 AI Assistant Ready.\n\nCommands:\n"
+        "/leads → Show today’s client dashboard\n"
+        "/ask → Ask anything",
+    )
+
+
+@bot.message_handler(commands=["leads"])
+def send_leads(message):
+    dashboard = generate_daily_dashboard()
+    bot.send_message(message.chat.id, dashboard, parse_mode="Markdown")
+
+
+@bot.message_handler(func=lambda m: True)
 def handle_message(message):
-    reply = ask_gemini(message.text)
+    user_text = message.text
+
+    try:
+        response = model.generate_content(user_text)
+        reply = response.text
+    except Exception:
+        reply = "⚠️ Gemini connection error."
+
     bot.reply_to(message, reply)
 
 
-print("🤖 Saikat AI Assistant is LIVE...")
+print("✅ AI Assistant running...")
 bot.infinity_polling()
