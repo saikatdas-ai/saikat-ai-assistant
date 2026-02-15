@@ -1,10 +1,16 @@
 import os
-import telebot
 import requests
-import json
+import telebot
 
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+# Load environment variables from Railway
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+if not TELEGRAM_TOKEN:
+    raise ValueError("❌ TELEGRAM_TOKEN not found in environment variables")
+
+if not GEMINI_API_KEY:
+    raise ValueError("❌ GEMINI_API_KEY not found in environment variables")
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
@@ -14,26 +20,35 @@ GEMINI_URL = (
 )
 
 
-def ask_gemini(text):
-    headers = {"Content-Type": "application/json"}
-    data = {
-        "contents": [{"parts": [{"text": text}]}]
-    }
-
-    response = requests.post(GEMINI_URL, headers=headers, data=json.dumps(data))
-    result = response.json()
-
+def ask_gemini(prompt: str) -> str:
     try:
-        return result["candidates"][0]["content"]["parts"][0]["text"]
-    except Exception:
+        response = requests.post(
+            GEMINI_URL,
+            headers={"Content-Type": "application/json"},
+            json={
+                "contents": [
+                    {
+                        "parts": [{"text": prompt}]
+                    }
+                ]
+            },
+            timeout=30,
+        )
+
+        data = response.json()
+
+        return data["candidates"][0]["content"]["parts"][0]["text"]
+
+    except Exception as e:
         return "⚠️ Gemini connection error."
 
 
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
-    reply = ask_gemini(message.text)
+    user_text = message.text
+    reply = ask_gemini(user_text)
     bot.reply_to(message, reply)
 
 
-print("AI Assistant is running...")
+print("🤖 Bot is running...")
 bot.infinity_polling()
