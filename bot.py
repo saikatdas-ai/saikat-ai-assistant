@@ -1,57 +1,38 @@
 import os
-import requests
 import telebot
+import google.generativeai as genai
 
-# ====== ENV VARIABLES FROM RAILWAY ======
+# ===== ENV VARIABLES =====
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# ====== TELEGRAM BOT SETUP ======
+if not TELEGRAM_TOKEN:
+    raise ValueError("Missing TELEGRAM_TOKEN")
+
+if not GEMINI_API_KEY:
+    raise ValueError("Missing GEMINI_API_KEY")
+
+# ===== CONFIGURE GEMINI =====
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel("gemini-1.5-flash")
+
+# ===== TELEGRAM BOT =====
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
-# ====== GEMINI ENDPOINT ======
-GEMINI_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-1.5-flash-latest:generateContent?key=" + GEMINI_API_KEY
-)
 
-# ====== FUNCTION TO TALK TO GEMINI ======
-def ask_gemini(prompt):
-    headers = {"Content-Type": "application/json"}
-
-    data = {
-        "contents": [
-            {
-                "parts": [
-                    {"text": prompt}
-                ]
-            }
-        ]
-    }
-
+def ask_gemini(prompt: str) -> str:
     try:
-        response = requests.post(GEMINI_URL, headers=headers, json=data)
-        result = response.json()
-
-        if "candidates" in result:
-            return result["candidates"][0]["content"]["parts"][0]["text"]
-        else:
-            return "⚠️ Gemini connection error."
-
+        response = model.generate_content(prompt)
+        return response.text
     except Exception as e:
-        return f"⚠️ Gemini error: {str(e)}"
+        return "⚠️ Gemini error: " + str(e)
 
 
-# ====== TELEGRAM MESSAGE HANDLER ======
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
-    user_text = message.text
-
-    reply = ask_gemini(user_text)
-
+    reply = ask_gemini(message.text)
     bot.reply_to(message, reply)
 
 
-# ====== START BOT ======
-print("🤖 Saikat AI Assistant is running...")
+print("🤖 Saikat AI Assistant is LIVE...")
 bot.infinity_polling()
