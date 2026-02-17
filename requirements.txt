@@ -2,3 +2,5 @@ pyTelegramBotAPI==4.26.0
 google-generativeai==0.8.4
 requests
 feedparser==6.0.10
+schedule==1.2.1
+pytz==2024.1
