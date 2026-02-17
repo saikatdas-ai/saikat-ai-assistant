@@ -4,101 +4,79 @@ import google.generativeai as genai
 from telebot import types
 
 # --- 1. CONFIGURATION ---
-# Get Keys from Railway (Secure Cloud Keys)
 BOT_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 
-# Crash Prevention
 if not BOT_TOKEN or not GEMINI_KEY:
-    raise Exception("❌ KEYS MISSING! Check Railway Variables.")
+    raise Exception("❌ KEYS MISSING!")
 
-# Connect to Services
 bot = telebot.TeleBot(BOT_TOKEN)
 genai.configure(api_key=GEMINI_KEY)
 
-# AI Brain Settings (Gemini 1.5 Flash)
-generation_config = {
-    "temperature": 0.7,
-    "top_p": 0.95,
-    "top_k": 64,
-    "max_output_tokens": 8192,
-}
+# --- 2. SMART MODEL DETECTION ---
+def get_best_model():
+    """Finds the best available Flash model for your API key."""
+    try:
+        for m in genai.list_models():
+            # Looks for gemini-2.0-flash or gemini-1.5-flash
+            if 'generateContent' in m.supported_generation_methods:
+                if 'flash' in m.name.lower():
+                    print(f"✅ Found and using model: {m.name}")
+                    return m.name
+        return "models/gemini-1.5-flash" # Fallback
+    except Exception as e:
+        print(f"Error listing models: {e}")
+        return "models/gemini-1.5-flash"
 
-model = genai.GenerativeModel(
-    model_name="gemini-1.5-flash",
-    generation_config=generation_config,
-)
+ACTIVE_MODEL_NAME = get_best_model()
+model = genai.GenerativeModel(model_name=ACTIVE_MODEL_NAME)
 
-# --- 2. COMMANDS ---
-
+# --- 3. COMMANDS ---
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
     welcome_text = (
-        "🤖 *SAIKAT AI ASSISTANT V2 (Voice Enabled)*\n\n"
-        "I am your photography business co-pilot.\n"
-        "🎤 *Send me a Voice Note* → I will listen and reply.\n"
-        "📋 */leads* → Get today's client list.\n"
-        "💬 *Chat* → Ask me anything about photography."
+        f"🤖 *SAIKAT AI V2 (Active Mode)*\n"
+        f"Using: `{ACTIVE_MODEL_NAME.split('/')[-1]}`\n\n"
+        "🎤 *Voice Note* → AI Action\n"
+        "📋 */leads* → Client List"
     )
     bot.reply_to(message, welcome_text, parse_mode='Markdown')
 
 @bot.message_handler(commands=['leads'])
 def send_leads(message):
-    leads_text = (
-        "🎯 *DAILY CLIENT SCOUT — PHASE 2*\n\n"
-        "1️⃣ *Rahul Mehta* | Brand Manager – Puma India\n"
-        "   👉 *Action:* Premium outreach (Campaign mode)\n\n"
-        "2️⃣ *Sarah Khan* | Marketing Head – UAE T20\n"
-        "   👉 *Action:* Professional intro\n\n"
-        "⚡ _Real database connecting in Phase-3..._"
-    )
+    leads_text = "🎯 *DAILY LEADS*\n1. Puma India Brand Mgr\n2. UAE T20 Marketing"
     bot.reply_to(message, leads_text, parse_mode='Markdown')
 
-# --- 3. NEW: VOICE NOTE HANDLER 🎙️ ---
+# --- 4. VOICE HANDLER ---
 @bot.message_handler(content_types=['voice'])
 def handle_voice(message):
     try:
-        # Acknowledge receipt
-        wait_msg = bot.reply_to(message, "👂 Listening to your voice note...")
-        
-        # 1. Download the voice file from Telegram
+        wait_msg = bot.reply_to(message, "👂 Thinking...")
         file_info = bot.get_file(message.voice.file_id)
         downloaded_file = bot.download_file(file_info.file_path)
         
-        # 2. Save it temporarily
         file_path = "voice_note.ogg"
-        with open(file_path, 'wb') as new_file:
-            new_file.write(downloaded_file)
+        with open(file_path, 'wb') as f:
+            f.write(downloaded_file)
             
-        # 3. Send audio to Gemini AI
+        # Standard Upload process
         myfile = genai.upload_file(file_path)
+        response = model.generate_content(["Process this request from Saikat:", myfile])
         
-        # 4. Generate Answer
-        response = model.generate_content([
-            "You are Saikat's personal photography assistant. Listen to this audio instructions and reply helpfully and briefly.",
-            myfile
-        ])
-        
-        # 5. Reply to user
-        bot.reply_to(message, f"🤖 *AI Transcribed & Replied:*\n\n{response.text}", parse_mode='Markdown')
-        
-        # 6. Cleanup (Delete the temp file)
+        bot.reply_to(message, f"🤖 *AI Reply:*\n\n{response.text}", parse_mode='Markdown')
         os.remove(file_path)
         bot.delete_message(message.chat.id, wait_msg.message_id)
-
     except Exception as e:
-        bot.reply_to(message, f"❌ Voice Error: {e}")
+        bot.reply_to(message, f"❌ Voice Error: {str(e)}")
 
-# --- 4. TEXT CHAT HANDLER ---
+# --- 5. TEXT HANDLER ---
 @bot.message_handler(func=lambda message: True)
 def echo_all(message):
     try:
-        # Simple text chat
         response = model.generate_content(message.text)
         bot.reply_to(message, response.text)
     except Exception as e:
-        bot.reply_to(message, "⚠️ AI Brain Hiccup. Try again.")
+        bot.reply_to(message, f"⚠️ Error: {str(e)}")
 
-# --- 5. RUNNER (Keep Alive) ---
-print("✅ Bot is running...")
+print("🚀 Bot checking models and starting...")
 bot.infinity_polling()
