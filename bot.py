@@ -2,138 +2,96 @@ import os
 import telebot
 import google.generativeai as genai
 from datetime import datetime
-import threading
-import time
 
 # ================= ENV =================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-YOUR_CHAT_ID = os.getenv("YOUR_CHAT_ID")  # your personal Telegram chat ID
+
+if not TELEGRAM_TOKEN:
+    raise Exception("❌ TELEGRAM_TOKEN missing")
+
+if not GEMINI_API_KEY:
+    raise Exception("❌ GEMINI_API_KEY missing")
 
 # ================= GEMINI =================
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-1.5-flash")
 
 # ================= TELEGRAM =================
-bot = telebot.TeleBot(TELEGRAM_TOKEN)
+bot = telebot.TeleBot(TELEGRAM_TOKEN, parse_mode="Markdown")
 
-
-# =========================================================
-# CLIENT SCOUT PLACEHOLDERS (REAL APIS IN NEXT PHASE)
-# =========================================================
-
-def linkedin_leads():
-    return [
-        {"name": "Arjun Kapoor", "role": "Brand Manager – Adidas India", "why": "New athlete campaign", "action": "Premium outreach"},
-        {"name": "Neha Sharma", "role": "Marketing Director – ILT20 UAE", "why": "League season prep", "action": "Professional intro"},
-    ]
-
-
-def instagram_leads():
-    return [
-        {"name": "Rohit Verma", "role": "Creative Producer – Sports Studio", "why": "Athlete BTS post", "action": "Warm intro"},
-        {"name": "Sana Ali", "role": "Brand Executive – Puma India", "why": "Tagged in campaign", "action": "Premium short outreach"},
-        {"name": "David Khan", "role": "League Media – T10 Global", "why": "Media prep started", "action": "Availability note"},
-    ]
-
-
-# =========================================================
-# DASHBOARD GENERATION
-# =========================================================
-
+# ================= DAILY DASHBOARD =================
 def generate_daily_dashboard():
     today = datetime.now().strftime("%d %b %Y")
-    leads = linkedin_leads() + instagram_leads()
 
-    dashboard = f"🎯 *DAILY CLIENT SCOUT — {today}*\n\n"
+    dashboard = f"""
+🎯 *DAILY CLIENT SCOUT — {today}*
 
-    for i, lead in enumerate(leads[:5], start=1):
-        try:
-            prompt = f"""
-Write a short professional outreach message.
+1️⃣ *Rahul Mehta*  
+Role: Brand Manager – Puma India  
+Why: New athlete campaign announced  
+Action: Premium outreach  
 
-Name: {lead['name']}
-Role: {lead['role']}
-Reason: {lead['why']}
+_Message ready:_  
+Hi Rahul, I noticed Puma’s recent athlete campaign direction.  
+I’ve been covering IPL, BCCI & major sports campaigns for 15+ years.  
+Would love to collaborate if any visual support is needed.
 
-Photographer credentials:
-• 15+ years IPL & BCCI
-• International leagues
-• SBI Life campaign with Pant & Jadeja
+────────────
 
-Tone: premium, human, confident.
-Max 3 lines.
+2️⃣ *Sarah Khan*  
+Role: Marketing Head – UAE T20 League  
+Why: Upcoming season preparation  
+Action: Professional intro  
+
+_Message ready:_  
+Hello Sarah, sharing a quick introduction.  
+I’m a sports photographer working across IPL, international cricket & commercial campaigns.  
+Happy to support your upcoming season if visuals are required.
+
+────────────
+
+⚡ 3 more leads arriving in Phase-2
 """
-            response = model.generate_content(prompt)
-            msg = response.text.strip()
-        except Exception:
-            msg = "⚠️ Message generation error."
-
-        dashboard += (
-            f"{i}️⃣ *{lead['name']}*\n"
-            f"Role: {lead['role']}\n"
-            f"Why: {lead['why']}\n"
-            f"Action: {lead['action']}\n\n"
-            f"_Message ready:_\n{msg}\n\n────────────\n\n"
-        )
-
     return dashboard
 
 
-# =========================================================
-# AUTO DAILY SCHEDULER (10:00 AM)
-# =========================================================
-
-def daily_scheduler():
-    while True:
-        now = datetime.now()
-
-        if now.hour == 10 and now.minute == 0:
-            try:
-                dashboard = generate_daily_dashboard()
-                bot.send_message(YOUR_CHAT_ID, dashboard, parse_mode="Markdown")
-                time.sleep(60)  # avoid duplicate send
-            except Exception:
-                pass
-
-        time.sleep(20)
-
-
-# Run scheduler in background
-threading.Thread(target=daily_scheduler, daemon=True).start()
-
-
-# =========================================================
-# TELEGRAM COMMANDS
-# =========================================================
-
+# ================= COMMANDS =================
 @bot.message_handler(commands=["start", "help"])
-def welcome(message):
+def send_welcome(message):
     bot.reply_to(
         message,
-        "🤖 *AI Business Assistant Active*\n\n"
-        "/leads → Get latest client dashboard\n"
-        "Auto-report → Every day at 10:00 AM",
-        parse_mode="Markdown",
+        "🤖 *AI Assistant Ready*\n\n"
+        "/leads → Show today’s client dashboard\n"
+        "/ask → Ask anything",
     )
 
 
 @bot.message_handler(commands=["leads"])
-def manual_leads(message):
+def send_leads(message):
     dashboard = generate_daily_dashboard()
-    bot.send_message(message.chat.id, dashboard, parse_mode="Markdown")
+    bot.send_message(message.chat.id, dashboard)
 
 
+# ================= AI CHAT =================
 @bot.message_handler(func=lambda m: True)
-def chat_ai(message):
+def handle_message(message):
+    user_text = message.text
+
     try:
-        response = model.generate_content(message.text)
-        reply = response.text
-    except Exception:
-        reply = "⚠️ Gemini connection error."
+        response = model.generate_content(user_text)
+        reply = response.text if response.text else "⚠️ Empty AI response."
+    except Exception as e:
+        print("Gemini error:", e)
+        reply = "⚠️ AI temporarily unavailable. Try again."
 
     bot.reply_to(message, reply)
 
 
-print("✅ AI Assistant running with Hybrid Automation…")
-bot.infinity_polling()
+# ================= SAFE START =================
+print("✅ AI Assistant running (Stable Phase-1)...")
+
+try:
+    bot.infinity_polling(skip_pending=True)
+except Exception as e:
+    print("❌ Bot crashed:", e)
