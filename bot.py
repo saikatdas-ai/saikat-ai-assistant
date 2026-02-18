@@ -1,6 +1,6 @@
-SAIKAT OS — Diagnostic Visibility + Safe Exploration Build
+SAIKAT OS - Diagnostic Visibility + Safe Exploration Build
 
-Audited, regression‑fixed, Phase‑3‑ready scanner
+Audited, regression-fixed, Phase-3-ready scanner
 
 import os import sys import telebot import google.generativeai as genai import feedparser import time import json import logging import difflib from urllib.parse import quote from datetime import datetime, date, timedelta
 
@@ -20,11 +20,41 @@ ADMIN_ID = int(ADMIN_ID)
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-genai.configure(api_key=GEMINI_KEY) model = genai.GenerativeModel("models/gemini-1.5-flash")
+genai.configure(api_key=GEMINI_KEY)
+
+--- Intelligent model auto-selection (future-proof) ---
+
+def select_best_model(): try: models = genai.list_models() # Prefer newest Gemini models that support generateContent candidates = [m.name for m in models if "generateContent" in m.supported_generation_methods]
+
+# Priority order: 2.x flash → 2.x → 1.5 flash → fallback
+    priority = [
+        "models/gemini-2.5-flash",
+        "models/gemini-2.0-flash",
+        "models/gemini-2.0-pro",
+        "models/gemini-1.5-flash",
+    ]
+
+    for p in priority:
+        if p in candidates:
+            logging.info(f"Using Gemini model: {p}")
+            return p
+
+    # If none matched, just use first valid candidate
+    if candidates:
+        logging.info(f"Using fallback Gemini model: {candidates[0]}")
+        return candidates[0]
+
+except Exception as e:
+    logging.error(f"Model discovery failed: {e}")
+
+# Absolute safe fallback
+return "models/gemini-1.5-flash"
+
+model = genai.GenerativeModel(select_best_model())
 
 ==========================================================
 
-2. STORAGE (ATOMIC + PRUNED + CRM‑SAFE)
+2. STORAGE (ATOMIC + PRUNED + CRM-SAFE)
 
 ==========================================================
 
@@ -80,7 +110,7 @@ save_followups(db)
 
 ==========================================================
 
-3. DETERMINISTIC SCORING (LOW‑GUARD SAFE)
+3. DETERMINISTIC SCORING (LOW-GUARD SAFE)
 
 ==========================================================
 
@@ -123,14 +153,14 @@ if category == "SPORTS":
         f'"IPL" sponsorship after:{past_date}',
         f'"Sports Authority of India" tender after:{past_date}',
     ]
-    label = "🏆 SPORTS"
+    label = "SPORTS"
 else:
     queries = [
         f'"won creative mandate" India after:{past_date}',
         f'"appointed" "Creative Director" India after:{past_date}',
         f'"campaign launch" TVC India after:{past_date}',
     ]
-    label = "🎨 ADS"
+    label = "ADS"
 
 seen = get_seen_links()
 titles = []
@@ -153,7 +183,7 @@ for q in queries:
             if any(similar(e.title, t) and same_brand(e.title, t) for t in titles):
                 continue
 
-            sc = calculate_score(e.title, category)
+            sc = calculate_score(e.title, label)
 
             if sc >= THRESHOLD:
                 leads.append({"title": e.title, "link": e.link, "score": sc, "cat": label})
@@ -203,7 +233,7 @@ except Exception as e:
 
 def admin_only(fn): def wrap(m): if m.from_user.id == ADMIN_ID: return fn(m) return wrap
 
-@bot.message_handler(commands=["start"]) @admin_only def start_cmd(m): bot.send_message(m.chat.id, f"LOW‑GUARD MODE ACTIVE (threshold={THRESHOLD})\nCommands: /leads-sports /leads-ad")
+@bot.message_handler(commands=["start"]) @admin_only def start_cmd(m): bot.send_message(m.chat.id, f"LOW-GUARD MODE ACTIVE (threshold={THRESHOLD})\nCommands: /leads-sports /leads-ad")
 
 @bot.message_handler(commands=["leads-sports"]) @admin_only def sports_cmd(m): bot.send_message(m.chat.id, "Scanning SPORTS funnel…") leads, diag = fetch_funnel("SPORTS")
 
@@ -225,7 +255,7 @@ bot.send_message(
 
 ==========================================================
 
-8. RUNNER (SELF‑HEALING)
+8. RUNNER (SELF-HEALING)
 
 ==========================================================
 
