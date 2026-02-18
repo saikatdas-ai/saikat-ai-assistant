@@ -1,326 +1,241 @@
-# SAIKAT OS — 10/10 PRODUCTION BUILD (Phase‑2.5 hardened, Phase‑3 ready)
-# Includes:
-# - Deterministic scoring
-# - Atomic persistence
-# - 30‑day lead pruning (performance)
-# - PERMANENT follow‑up memory (conversion safety)
-# - Idempotent scheduler
-# - Crash‑safe runner
+SAIKAT OS — Diagnostic Visibility + Safe Exploration Build
 
-import os
-import sys
-import telebot
-import google.generativeai as genai
-import feedparser
-import time
-import json
-import logging
-import threading
-import schedule
-import pytz
-import difflib
-from urllib.parse import quote
-from datetime import datetime, date, timedelta
+Audited, regression‑fixed, Phase‑3‑ready scanner
 
-# ==========================================================
-# 1. CONFIG
-# ==========================================================
+import os import sys import telebot import google.generativeai as genai import feedparser import time import json import logging import difflib from urllib.parse import quote from datetime import datetime, date, timedelta
+
+==========================================================
+
+1. CONFIG + SAFE BOOT
+
+==========================================================
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-BOT_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
-ADMIN_ID = os.environ.get("ADMIN_USER_ID")
+BOT_TOKEN = os.environ.get("TELEGRAM_TOKEN") GEMINI_KEY = os.environ.get("GEMINI_API_KEY") ADMIN_ID = os.environ.get("ADMIN_USER_ID")
 
-if not BOT_TOKEN or not GEMINI_KEY or not ADMIN_ID:
-    logging.critical("Missing env configuration. Exiting.")
-    sys.exit(1)
+if not BOT_TOKEN or not GEMINI_KEY or not ADMIN_ID: logging.critical("Missing TELEGRAM_TOKEN / GEMINI_API_KEY / ADMIN_USER_ID") sys.exit(1)
 
 ADMIN_ID = int(ADMIN_ID)
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-genai.configure(api_key=GEMINI_KEY)
-model = genai.GenerativeModel("models/gemini-1.5-flash")
+genai.configure(api_key=GEMINI_KEY) model = genai.GenerativeModel("models/gemini-1.5-flash")
 
-# ==========================================================
-# 2. STORAGE LAYERS
-# ==========================================================
-DATA_DIR = "/app/data"
-SEEN_FILE = os.path.join(DATA_DIR, "seen_links.json")
-STATE_FILE = os.path.join(DATA_DIR, "state.json")
-FOLLOW_FILE = os.path.join(DATA_DIR, "followups.json")  # permanent CRM memory
+==========================================================
+
+2. STORAGE (ATOMIC + PRUNED + CRM‑SAFE)
+
+==========================================================
+
+DATA_DIR = "/app/data" SEEN_FILE = os.path.join(DATA_DIR, "seen_links.json") FOLLOW_FILE = os.path.join(DATA_DIR, "followups.json")
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
+def load_json(path, default): try: if os.path.exists(path): with open(path, "r") as f: return json.load(f) except Exception as e: logging.error(f"Read error {path}: {e}") return default
 
-def load_json(path, default):
-    try:
-        if os.path.exists(path):
-            with open(path, "r") as f:
-                return json.load(f)
-    except Exception as e:
-        logging.error(f"Read error {path}: {e}")
-    return default
+def save_json_atomic(path, data): tmp = path + ".tmp" try: with open(tmp, "w") as f: json.dump(data, f) os.replace(tmp, path) except Exception as e: logging.error(f"Write error {path}: {e}")
 
+------------------ PRUNED PERFORMANCE MEMORY ------------------
 
-def save_json_atomic(path, data):
-    tmp = path + ".tmp"
-    try:
-        with open(tmp, "w") as f:
-            json.dump(data, f)
-        os.replace(tmp, path)
-    except Exception as e:
-        logging.error(f"Write error {path}: {e}")
+def prune_seen(days=30): data = load_json(SEEN_FILE, []) cutoff = datetime.utcnow() - timedelta(days=days)
 
-# ==========================================================
-# 3. PERFORMANCE MEMORY (30‑DAY PRUNE)
-# ==========================================================
+fresh = [
+    i for i in data
+    if isinstance(i, dict)
+    and "date" in i
+    and datetime.fromisoformat(i["date"]).replace(tzinfo=None) > cutoff
+]
 
-def prune_old_links(days=30):
-    data = load_json(SEEN_FILE, [])
-    cutoff = datetime.utcnow() - timedelta(days=days)
+save_json_atomic(SEEN_FILE, fresh)
 
-    fresh = [
-        item for item in data
-        if isinstance(item, dict)
-        and "date" in item
-        and datetime.fromisoformat(item["date"]).replace(tzinfo=None) > cutoff
+def get_seen_links(): prune_seen() return {i["link"] for i in load_json(SEEN_FILE, []) if isinstance(i, dict)}
+
+def add_seen_links(links): existing = load_json(SEEN_FILE, []) now = datetime.utcnow().isoformat()
+
+for l in links:
+    existing.append({"link": l, "date": now})
+
+save_json_atomic(SEEN_FILE, existing)
+
+------------------ PERMANENT CRM MEMORY ------------------
+
+def load_followups(): return load_json(FOLLOW_FILE, {})
+
+def save_followups(db): save_json_atomic(FOLLOW_FILE, db)
+
+def register_followup(title, link): db = load_followups()
+
+if link not in db:
+    db[link] = {
+        "title": title,
+        "first_seen": date.today().isoformat(),
+        "last_contact": None,
+        "status": "new",
+        "notes": "",
+        "deal_value": None,
+    }
+
+save_followups(db)
+
+==========================================================
+
+3. DETERMINISTIC SCORING (LOW‑GUARD SAFE)
+
+==========================================================
+
+THRESHOLD = 10
+
+KEYWORDS = { "tender": ["tender", "rfp", "bid", "contract", "procurement"], "win": ["won", "wins", "bags", "secures", "lands", "mandate"], "appoint": ["appointed", "names", "hires"], "partner": ["partner", "sponsorship"], "launch": ["launch", "campaign", "announce"], }
+
+def calculate_score(title, category): t = title.lower() s = 10
+
+if any(w in t for w in KEYWORDS["tender"]): s += 40
+if any(w in t for w in KEYWORDS["win"]): s += 30
+if any(w in t for w in KEYWORDS["appoint"]): s += 20
+if category == "SPORTS" and ("bcci" in t or "ipl" in t): s += 20
+
+return min(s, 100)
+
+==========================================================
+
+4. SMART DEDUPE (RESTORED + SAFE)
+
+==========================================================
+
+COMMON = {"india", "campaign", "launch", "announces", "ipl"}
+
+def similar(a, b): return difflib.SequenceMatcher(None, a.lower(), b.lower()).ratio() > 0.85
+
+def same_brand(a, b): wa = {w for w in a.lower().split() if w not in COMMON} wb = {w for w in b.lower().split() if w not in COMMON} return len(wa & wb) >= 1
+
+==========================================================
+
+5. FUNNEL SCAN + DIAGNOSTICS
+
+==========================================================
+
+def fetch_funnel(category): past_date = (date.today() - timedelta(days=90)).strftime('%Y-%m-%d')
+
+if category == "SPORTS":
+    queries = [
+        f'"BCCI" partner after:{past_date}',
+        f'"IPL" sponsorship after:{past_date}',
+        f'"Sports Authority of India" tender after:{past_date}',
     ]
+    label = "🏆 SPORTS"
+else:
+    queries = [
+        f'"won creative mandate" India after:{past_date}',
+        f'"appointed" "Creative Director" India after:{past_date}',
+        f'"campaign launch" TVC India after:{past_date}',
+    ]
+    label = "🎨 ADS"
 
-    save_json_atomic(SEEN_FILE, fresh)
+seen = get_seen_links()
+titles = []
+new_links = set()
+leads = []
 
+scanned = 0
 
-def get_seen_links():
-    prune_old_links()
-    return {item["link"] for item in load_json(SEEN_FILE, [])}
+for q in queries:
+    try:
+        url = f"https://news.google.com/rss/search?q={quote(q)}&hl=en-IN&gl=IN&ceid=IN:en"
+        feed = feedparser.parse(url)
 
+        for e in feed.entries[:10]:
+            scanned += 1
 
-def add_seen_links(links):
-    existing = load_json(SEEN_FILE, [])
-    now = datetime.utcnow().isoformat()
+            if e.link in seen:
+                continue
 
-    for link in links:
-        existing.append({"link": link, "date": now})
+            if any(similar(e.title, t) and same_brand(e.title, t) for t in titles):
+                continue
 
-    save_json_atomic(SEEN_FILE, existing)
+            sc = calculate_score(e.title, category)
 
-# ==========================================================
-# 4. PERMANENT FOLLOW‑UP MEMORY (NO PRUNING)
-# ==========================================================
+            if sc >= THRESHOLD:
+                leads.append({"title": e.title, "link": e.link, "score": sc, "cat": label})
+                register_followup(e.title, e.link)
 
-def load_followups():
-    return load_json(FOLLOW_FILE, {})
+            titles.append(e.title)
+            new_links.add(e.link)
 
+    except Exception as e:
+        logging.error(f"Feed error {q}: {e}")
 
-def save_followups(data):
-    save_json_atomic(FOLLOW_FILE, data)
+if new_links:
+    add_seen_links(new_links)
 
+leads.sort(key=lambda x: x["score"], reverse=True)
 
-def register_followup(title, link):
-    db = load_followups()
-
-    if link not in db:
-        db[link] = {
-            "title": title,
-            "first_seen": date.today().isoformat(),
-            "last_contact": None,
-            "status": "new"  # new / contacted / replied / booked
-        }
-
-    save_followups(db)
-
-# ==========================================================
-# 5. DETERMINISTIC SCORING
-# ==========================================================
-KEYWORDS = {
-    "tender": ["tender", "rfp", "bid", "contract"],
-    "win": ["won", "wins", "bags", "secures", "lands"],
-    "appoint": ["appointed", "names", "hires"],
-    "partner": ["partner", "collaboration"],
-    "launch": ["launch", "unveil", "announce"],
+diagnostics = {
+    "scanned": scanned,
+    "kept": len(leads),
+    "threshold": THRESHOLD,
 }
 
+return leads[:10], diagnostics
 
-def contains(text, words):
-    return any(w in text for w in words)
+==========================================================
 
+6. AI REPORT
 
-def score(title, category):
-    t = title.lower()
-    s = 50
+==========================================================
 
-    if contains(t, KEYWORDS["tender"]): s += 30
-    if contains(t, KEYWORDS["win"]): s += 25
-    if contains(t, KEYWORDS["appoint"]): s += 20
-    if contains(t, KEYWORDS["partner"]): s += 15
-    if contains(t, KEYWORDS["launch"]): s += 15
+def generate_report(leads): if not leads: return "No viable leads found."
 
-    if category == "SPORTS" and ("bcci" in t or "ipl" in t):
-        s += 10
+prompt = f"Write concise outreach strategy for Saikat Das:\n{json.dumps(leads)}"
 
-    return min(s, 100)
+try:
+    r = model.generate_content(prompt, request_options={'timeout': 45})
+    return r.text
+except Exception as e:
+    logging.error(e)
+    return "AI error."
 
-# ==========================================================
-# 6. SIGNAL FETCH + SMART DEDUPE
-# ==========================================================
+==========================================================
 
-def similar(a, b):
-    return difflib.SequenceMatcher(None, a.lower(), b.lower()).ratio() > 0.85
+7. COMMANDS
 
-COMMON_WORDS = {"india", "launch", "announces", "campaign", "ipl"}
+==========================================================
 
+def admin_only(fn): def wrap(m): if m.from_user.id == ADMIN_ID: return fn(m) return wrap
 
-def same_brand(a, b):
-    wa = {w for w in a.lower().split() if w not in COMMON_WORDS}
-    wb = {w for w in b.lower().split() if w not in COMMON_WORDS}
-    return len(wa & wb) >= 1
+@bot.message_handler(commands=["start"]) @admin_only def start_cmd(m): bot.send_message(m.chat.id, f"LOW‑GUARD MODE ACTIVE (threshold={THRESHOLD})\nCommands: /leads-sports /leads-ad")
 
+@bot.message_handler(commands=["leads-sports"]) @admin_only def sports_cmd(m): bot.send_message(m.chat.id, "Scanning SPORTS funnel…") leads, diag = fetch_funnel("SPORTS")
 
-def fetch_leads():
-    queries = [
-        '"Sports Authority of India" tender',
-        '"BCCI" partner announced',
-        '"IPL" sponsorship',
-        '"won creative mandate" India',
-        '"appointed" "Creative Director" India',
-        '"campaign launch" TVC India',
-    ]
+report = generate_report(leads)
 
-    seen = get_seen_links()
-    titles = []
-    new_links = set()
-    leads = []
+bot.send_message(
+    m.chat.id,
+    f"SPORTS DIAGNOSTIC\nScanned: {diag['scanned']}\nKept: {diag['kept']}\nThreshold: {diag['threshold']}\n\n{report}",
+)
 
-    for q in queries:
-        try:
-            url = f"https://news.google.com/rss/search?q={quote(q)}&hl=en-IN&gl=IN&ceid=IN:en"
-            feed = feedparser.parse(url)
+@bot.message_handler(commands=["leads-ad"]) @admin_only def ads_cmd(m): bot.send_message(m.chat.id, "Scanning ADS funnel…") leads, diag = fetch_funnel("ADS")
 
-            for e in feed.entries[:3]:
-                if e.link in seen:
-                    continue
+report = generate_report(leads)
 
-                if any(similar(e.title, t) and same_brand(e.title, t) for t in titles):
-                    continue
+bot.send_message(
+    m.chat.id,
+    f"ADS DIAGNOSTIC\nScanned: {diag['scanned']}\nKept: {diag['kept']}\nThreshold: {diag['threshold']}\n\n{report}",
+)
 
-                category = "SPORTS" if any(k in q for k in ["BCCI", "IPL", "tender"]) else "ADS"
-                sc = score(e.title, category)
+==========================================================
 
-                if sc >= 60:
-                    leads.append({"title": e.title, "link": e.link, "score": sc})
-                    register_followup(e.title, e.link)
+8. RUNNER (SELF‑HEALING)
 
-                titles.append(e.title)
-                new_links.add(e.link)
+==========================================================
 
-        except Exception as e:
-            logging.error(f"Feed error {q}: {e}")
+if name == "main": delay = 5
 
-    if new_links:
-        add_seen_links(new_links)
-
-    leads.sort(key=lambda x: x["score"], reverse=True)
-    return leads[:5]
-
-# ==========================================================
-# 7. AI REPORT (TEXT ONLY)
-# ==========================================================
-
-def generate_report(leads):
-    if not leads:
-        return None
-
-    prompt = f"""
-Write concise business strategy for these leads for photographer Saikat Das.
-Leads:
-{json.dumps(leads, indent=2)}
-Plain text only.
-"""
-
+while True:
     try:
-        r = model.generate_content(prompt, request_options={'timeout': 45})
-        return r.text
+        bot.infinity_polling(timeout=20, long_polling_timeout=10)
+        delay = 5
     except Exception as e:
-        logging.error(f"AI error: {e}")
-        return None
-
-# ==========================================================
-# 8. SCOUT RUN
-# ==========================================================
-
-def update_last_run():
-    save_json_atomic(STATE_FILE, {"last_run": date.today().isoformat()})
-
-
-def needs_catchup():
-    return load_json(STATE_FILE, {}).get("last_run") != date.today().isoformat()
-
-
-def run_scout(catchup=False):
-    leads = fetch_leads()
-
-    update_last_run()  # idempotent BEFORE send
-
-    if not leads:
-        return
-
-    report = generate_report(leads)
-    if report:
-        prefix = "CATCHUP" if catchup else "DAILY"
-        bot.send_message(ADMIN_ID, f"{prefix} REPORT\n\n{report}")
-
-# ==========================================================
-# 9. SCHEDULER
-# ==========================================================
-
-def scheduler():
-    ist = pytz.timezone("Asia/Kolkata")
-    schedule.every().day.at("10:00").tz(ist).do(run_scout)
-
-    while True:
-        schedule.run_pending()
-        time.sleep(60)
-
-
-threading.Thread(target=scheduler, daemon=True).start()
-
-# ==========================================================
-# 10. COMMANDS
-# ==========================================================
-
-def admin_only(fn):
-    def wrap(m):
-        if m.from_user.id == ADMIN_ID:
-            return fn(m)
-    return wrap
-
-
-@bot.message_handler(commands=["start"])
-@admin_only
-def start(m):
-    bot.send_message(m.chat.id, "SAIKAT OS READY")
-
-    if needs_catchup():
-        bot.send_message(m.chat.id, "Running missed scout…")
-        run_scout(catchup=True)
-
-
-@bot.message_handler(commands=["scout"])
-@admin_only
-def scout(m):
-    run_scout(catchup=True)
-
-# ==========================================================
-# 11. RUNNER (SELF‑HEALING)
-# ==========================================================
-if __name__ == "__main__":
-    delay = 5
-
-    while True:
-        try:
-            bot.infinity_polling(timeout=20, long_polling_timeout=10)
-            delay = 5
-        except Exception as e:
-            logging.error(f"Crash: {e}")
-            time.sleep(delay)
-            delay = min(delay * 2, 300)
+        logging.error(f"Crash: {e}")
+        time.sleep(delay)
+        delay = min(delay * 2, 300)
