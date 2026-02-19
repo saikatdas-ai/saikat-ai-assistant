@@ -1,6 +1,6 @@
 SAIKAT OS - Diagnostic Visibility + Safe Exploration Build
 
-Audited, regression-fixed, Phase-3-ready scanner
+Fully corrected, syntax-safe, deploy-ready version
 
 import os import sys import telebot import google.generativeai as genai import feedparser import time import json import logging import difflib from urllib.parse import quote from datetime import datetime, date, timedelta
 
@@ -22,12 +22,11 @@ bot = telebot.TeleBot(BOT_TOKEN)
 
 genai.configure(api_key=GEMINI_KEY)
 
---- Intelligent model auto-selection (future-proof) ---
+--- Intelligent model auto-selection ---
 
-def select_best_model(): try: models = genai.list_models() # Prefer newest Gemini models that support generateContent candidates = [m.name for m in models if "generateContent" in m.supported_generation_methods]
+def select_best_model(): try: models = genai.list_models() candidates = [m.name for m in models if "generateContent" in m.supported_generation_methods]
 
-# Priority order: 2.x flash → 2.x → 1.5 flash → fallback
-    priority = [
+priority = [
         "models/gemini-2.5-flash",
         "models/gemini-2.0-flash",
         "models/gemini-2.0-pro",
@@ -39,7 +38,6 @@ def select_best_model(): try: models = genai.list_models() # Prefer newest Gemin
             logging.info(f"Using Gemini model: {p}")
             return p
 
-    # If none matched, just use first valid candidate
     if candidates:
         logging.info(f"Using fallback Gemini model: {candidates[0]}")
         return candidates[0]
@@ -47,14 +45,13 @@ def select_best_model(): try: models = genai.list_models() # Prefer newest Gemin
 except Exception as e:
     logging.error(f"Model discovery failed: {e}")
 
-# Absolute safe fallback
 return "models/gemini-1.5-flash"
 
 model = genai.GenerativeModel(select_best_model())
 
 ==========================================================
 
-2. STORAGE (ATOMIC + PRUNED + CRM-SAFE)
+2. STORAGE
 
 ==========================================================
 
@@ -66,7 +63,11 @@ def load_json(path, default): try: if os.path.exists(path): with open(path, "r")
 
 def save_json_atomic(path, data): tmp = path + ".tmp" try: with open(tmp, "w") as f: json.dump(data, f) os.replace(tmp, path) except Exception as e: logging.error(f"Write error {path}: {e}")
 
------------------- PRUNED PERFORMANCE MEMORY ------------------
+==========================================================
+
+3. SEEN MEMORY (30‑day prune, CRM safe)
+
+==========================================================
 
 def prune_seen(days=30): data = load_json(SEEN_FILE, []) cutoff = datetime.utcnow() - timedelta(days=days)
 
@@ -88,7 +89,11 @@ for l in links:
 
 save_json_atomic(SEEN_FILE, existing)
 
------------------- PERMANENT CRM MEMORY ------------------
+==========================================================
+
+4. FOLLOW‑UP CRM MEMORY (permanent)
+
+==========================================================
 
 def load_followups(): return load_json(FOLLOW_FILE, {})
 
@@ -110,13 +115,13 @@ save_followups(db)
 
 ==========================================================
 
-3. DETERMINISTIC SCORING (LOW-GUARD SAFE)
+5. SCORING ENGINE
 
 ==========================================================
 
 THRESHOLD = 10
 
-KEYWORDS = { "tender": ["tender", "rfp", "bid", "contract", "procurement"], "win": ["won", "wins", "bags", "secures", "lands", "mandate"], "appoint": ["appointed", "names", "hires"], "partner": ["partner", "sponsorship"], "launch": ["launch", "campaign", "announce"], }
+KEYWORDS = { "tender": ["tender", "rfp", "bid", "contract", "procurement"], "win": ["won", "wins", "bags", "secures", "lands", "mandate"], "appoint": ["appointed", "names", "hires"], }
 
 def calculate_score(title, category): t = title.lower() s = 10
 
@@ -129,7 +134,7 @@ return min(s, 100)
 
 ==========================================================
 
-4. SMART DEDUPE (RESTORED + SAFE)
+6. DEDUPE LOGIC
 
 ==========================================================
 
@@ -141,7 +146,7 @@ def same_brand(a, b): wa = {w for w in a.lower().split() if w not in COMMON} wb 
 
 ==========================================================
 
-5. FUNNEL SCAN + DIAGNOSTICS
+7. FUNNEL SCAN
 
 ==========================================================
 
@@ -153,14 +158,12 @@ if category == "SPORTS":
         f'"IPL" sponsorship after:{past_date}',
         f'"Sports Authority of India" tender after:{past_date}',
     ]
-    label = "SPORTS"
 else:
     queries = [
         f'"won creative mandate" India after:{past_date}',
         f'"appointed" "Creative Director" India after:{past_date}',
         f'"campaign launch" TVC India after:{past_date}',
     ]
-    label = "ADS"
 
 seen = get_seen_links()
 titles = []
@@ -183,10 +186,10 @@ for q in queries:
             if any(similar(e.title, t) and same_brand(e.title, t) for t in titles):
                 continue
 
-            sc = calculate_score(e.title, label)
+            sc = calculate_score(e.title, category)
 
             if sc >= THRESHOLD:
-                leads.append({"title": e.title, "link": e.link, "score": sc, "cat": label})
+                leads.append({"title": e.title, "link": e.link, "score": sc, "cat": category})
                 register_followup(e.title, e.link)
 
             titles.append(e.title)
@@ -200,17 +203,13 @@ if new_links:
 
 leads.sort(key=lambda x: x["score"], reverse=True)
 
-diagnostics = {
-    "scanned": scanned,
-    "kept": len(leads),
-    "threshold": THRESHOLD,
-}
+diagnostics = {"scanned": scanned, "kept": len(leads), "threshold": THRESHOLD}
 
 return leads[:10], diagnostics
 
 ==========================================================
 
-6. AI REPORT
+8. AI REPORT
 
 ==========================================================
 
@@ -227,7 +226,7 @@ except Exception as e:
 
 ==========================================================
 
-7. COMMANDS
+9. COMMANDS
 
 ==========================================================
 
@@ -255,7 +254,7 @@ bot.send_message(
 
 ==========================================================
 
-8. RUNNER (SELF-HEALING)
+10. RUNNER
 
 ==========================================================
 
