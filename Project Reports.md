@@ -1,98 +1,47 @@
-📑 Project Report: SAIKAT OS (Phase 2.5)
-Status: Production Ready (Hardened)
-Owner: Saikat Das (Elite Sports & Advertising Photographer)
-Objective: Automate the discovery of high-value Sports Tenders and Advertising Mandates using deterministic scoring and AI strategy.
 
-🗂️ 1. File Architecture & Directory Structure
+/leads-sports
+Sports Radar running. Checking 48h + 7d buffer. Estimated 15-30 seconds.
+Sports Radar Report
 
-The system is designed to be persistent (survives restarts) and atomic (prevents data corruption). All critical files live in the /app/data volume.
+(100) IPL-linked Hundred franchises likely to avoid Pakistan players at auction: reports - cricexec
 
-File Name	Purpose	Data Type	Role in the System
-bot.py	The Brain	Python Code	Contains the logic for fetching, scoring, deduplicating, and communicating via Telegram.
-runtime.txt	The Stabilizer	Text	Forces Railway to use Python 3.11 to ensure library compatibility.
-requirements.txt	The Toolkit	Text	Lists all necessary libraries (telebot, genai, feedparser, pytz).
-seen_links.json	The Memory	JSON	Stores URLs of news already processed. Pruned every 30 days to maintain speed.
-state.json	The Heartbeat	JSON	Tracks the last successful run date to prevent duplicate daily reports.
-followups.json	The Vault (CRM)	JSON	Permanent Storage. Stores every high-scoring lead for long-term conversion.
-⚙️ 2. Core Functional Logic
+(100) Legends League Cricket franchises spend Rs 30.56 crore at player auction; 97 cricketers signed - The Economic Times
 
-This system replaces "AI guessing" with Deterministic Engineering.
+(100) Six franchises spend Rs 30.56 crore to acquire 97 players in Legends League Cricket auction - The News Mill
 
-A. High-Value Signal Hunting
+(100) Legends League Cricket auction: Franchises spend Rs 30.56 cr on stars - Asianet Newsable
 
-The bot scans Google News RSS feeds using professionally tuned queries for both Sports (BCCI, IPL, SAI Tenders) and Advertising (Mandate wins, Creative Director appointments, TVC launches).
+(100) Peshawar Zalmi rope in Shahnawaz Dahani for PSL 11 after players auction - Geo Super
 
-B. Deterministic Scoring (The Bouncer)
+(100) IPL Auction 2026 LIVE Updates: Cameron Green emerges costliest, big pay day for uncapped Indians in Abu Dhabi - Mint
+U01MUzFR0gGXAkFVX3lxTFBnSHVHcnRBQzFPUEh1U1pqam53aWdRN2dxaGhiX2FUaWo0ZklrOGZ1RWhHbkVWUjdDUjR0aWY4UWVTekZRSnJfd2huNUtvQnV0ZFozbFRLNmstSmhxOWdXa090d0l4ZmpOOUhhaW5EZnZLa0YzMXJhMU5hWWRkTGI1OVhCcWFvMlFaT21FOEp5bVV6eGNFQW4xMXo3eEtoSVNEVVRFZjhTb2NjSWgydDJIMXpNdVRfb18wMUxmcTJQOVJNeWJkUmN2Zng0dWdOVm90cW5qRUdNc2I2RWZoQXZrc2hFTk5LMng5Y3JPNl9EdFhZdkx5UkJYRkRfLUI3TUpUeWw0WUFrM0N0UW51U1kyckY0WWxYTQ?oc=5)
 
-Instead of the AI deciding what is important, a Python math engine calculates a score (0-100) based on keyword groups:
+(100) WPL 2026: Complete Squads After The Mega-Auction | Cricket News Today | Women's Premier League - Wisden
 
-+30 points: Tenders, RFPs, Bids.
+(100) Nikhil Chaudhary turns ‘Australian' for IPL 2026 auction hours after being listed as Indian; here's what happened - Mint
 
-+25 points: Won mandates, Account wins.
+(100) Over 50 Pakistani Cricketers Set for The Hundred 2026 Auction - The CSR Journal
 
-+20 points: New Creative Director appointments.
+(100) “ECB need to act fast”- Michael Vaughan on reports of IPL owned teams to skip Pakistan players in upcoming The Hundred auction - Circle Of Cricket
 
-+10 points: Specific "BCCI" or "IPL" context.
+(80) Pakistan players to face boycott by franchises of THIS league by IPL-linked teams? Know in detail - DNA India
 
-Lead Threshold: Only leads with a score ≥ 60 are sent to you.
+(80) Global private equity firms bowled over by Indian cricket league IPL - Reuters
+xPLVhNNkp0WUlFM2FvRXgwbDNmLWFfdzA4RmUzV2FUWXkxcVh3WFJNQlY2UnB3bnR2X210OFZKeXBlSncxVl9oTGtBVnoxNDhmRTFzSS03cGhYOEZINmNlQXVSaE9rNjRsaEQ4MmY0NzlQNF9EZEdnbER1SUx3ZnlMU1NnYjFyUkx6ZkVQWDNwLWNmLUxVZF8zVFRJS1FlQmhGUzM5RlRDN0JBYU5sMWVUR2Z5OG9zRHc?oc=5)
 
-C. Smart Deduplication (The Filter)
+(80) CRICKET | Big Bash League exploring options of hosting games in India - The Hindu
 
-The system uses a two-layer filter to prevent spam:
+(80) Big Bash League in India? Cricket Australia eyes historic BBL match at Chennai’s Chepauk - The Economic Times
 
-URL Check: If the link was seen in the last 30 days, it is ignored.
+(80) No PAK cricketers to be picked for IPL-backed Hundred franchises: Report - Business Standard
 
-Fuzzy Brand Check: If a title is 85% similar AND contains the same brand name (e.g., "Ogilvy wins Coke" vs. "Coke mandate to Ogilvy"), it is ignored as a duplicate.
+(80) Australia’s Big Bash League plans India debut, Chennai in focus - The Morning Voice
 
-🛡️ 3. Failure Protection (Self-Healing)
+(80) Big Bash League To Get Indian Flavour? Cricket Australia Pondering Hosting BBL Opener In India: Report - Republic World
+tRGgwX0swOGtiNTVkMjNlWnZnZmZyeXlJN3ZYdndSS0NDSmxvdWRSa0dDVXZtZVZPTmw5TmlaR0tjeGVoRVJ1dw?oc=5)
 
-Atomic Persistence: The bot writes data to a .tmp file before renaming it. This ensures that even if the system crashes during a save, your lead data is never corrupted.
+(80) Big Bash League interested in hosting games at Chepauk, discussions on - The New Indian Express
 
-Exponential Backoff: If the Telegram API or internet fails, the bot waits (5s, 10s, 20s...) rather than crashing, ensuring 24/7 uptime on Railway.
+(80) Cricket Australia Eyes BBL Opener in India Amid Franchise Expansion Talks - Devdiscourse
 
-Catch-Up Logic: If the bot is offline at 10:00 AM, it will automatically trigger the missed report the moment you type /start.
-
-💼 4. How It Works For You
-
-This system is built specifically to leverage your BCCI and SBI Life (Pant/Jadeja) credentials.
-
-Daily Intel: Every day at 10:00 AM IST, you receive a filtered report of the top 5 leads found globally.
-
-Authority Pitting: When you use the /pitch command, the AI is instructed to mention your Independent Stills Unit authority and your experience running sets alongside TVC floors.
-
-Lead Capture: Every report you receive is automatically saved to followups.json. This is your future goldmine for monthly follow-ups.
-
-🛠️ 5. Maintenance Manual for Future AI
-
-To Add Keywords: Edit the KEYWORD_GROUPS dictionary in bot.py.
-
-To Change Schedule: Edit the .at("10:00") line in the scheduler_loop function.
-
-To Check Health: Type /start in Telegram; the bot will report if its storage is "Healthy" or "Read-Only".
-
-END OF REPORT
-This document is the authoritative guide for the current build. No modifications should be made to the core logic without referencing this architectural safety standard.
-
-
-
-=================================================================
-
-
-🚀 SYSTEM HANDOVER: SAIKAT OS (PHASE 2.5)
-
-Role: You are now the Lead Engineer for Saikat Das, an elite Sports and Advertising Photographer.
-Context: I have a live, production-grade AI Lead Intelligence system running on Railway.
-
-System Architecture:
-
-Language: Python 3.11 (Managed via runtime.txt).
-
-Logic: Deterministic keyword-based scoring (Python) + AI-generated pitch strategy (Gemini 1.5 Flash).
-
-Persistence: Atomic JSON writes with a 30-day rolling window for performance and a permanent CRM file (followups.json) for conversion.
-
-Security: Admin-locked via Telegram User ID.
-
-Self-Healing: Exponential backoff for API crashes and catch-up logic for missed 10 AM reports.
-
-The Mission: > Do not suggest "beginner" scripts or basic automations. All code updates must maintain atomicity and persistence. Your goal is to help me hunt for high-value tenders (BCCI/IPL) and advertising mandates (Ogilvy/Dentsu) by weaponizing my SBI Life and BCCI authority.
+(80) Global private equity targets IPL as franchise valuations surge toward $2 billion - cricexec
