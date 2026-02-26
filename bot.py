@@ -162,14 +162,22 @@ def discover(days):
             if sig in queue:
                 continue
 
-            queue[sig] = {
-                "title": title,
-                "link": link,
-                "score": calculate_score(title),
-                "released": False,
-                "date": datetime.utcnow().isoformat(),
-                "source": "rss"
-            }
+           revenue = detect_revenue_angle(title)
+roles = detect_decision_signal(title)
+confidence = calculate_confidence(title, "rss", revenue, roles)
+
+queue[sig] = {
+    "title": title,
+    "link": link,
+    "score": calculate_score(title),
+    "confidence": confidence,
+    "priority": classify_priority(confidence),
+    "released": False,
+    "date": datetime.utcnow().isoformat(),
+    "source": "rss",
+    "revenue_angle": revenue,
+    "decision_roles": roles
+}
 
             seen.append({
                 "link": link,
@@ -180,58 +188,6 @@ def discover(days):
     save_json_atomic(QUEUE_FILE, queue)
 
     return scanned
-
-# ============================================================
-# PHASE 2.14 EXTENDED DISCOVERY
-# ============================================================
-
-def http_fetch(url, timeout=15):
-    try:
-        headers = {"User-Agent": "Mozilla/5.0 (SaikatOS Radar 2.14)"}
-        r = requests.get(url, headers=headers, timeout=timeout)
-        if r.status_code == 200:
-            return r.text
-    except:
-        pass
-    return ""
-
-def google_index_scan(query):
-    results = []
-    url = f"https://www.google.com/search?q={quote(query)}&num=10"
-    html = http_fetch(url)
-    if not html:
-        return results
-    matches = re.findall(r'/url\?q=(https?://[^&]+)&', html)
-    for link in matches:
-        if "google" not in link:
-            results.append(link)
-    return list(set(results))
-
-def cricbuzz_fixture_scan():
-    results = []
-    html = http_fetch("https://www.cricbuzz.com/cricket-schedule")
-    if not html:
-        return results
-    matches = re.findall(r'href="(/cricket-match/[^"]+)"', html)
-    for m in matches[:15]:
-        results.append(("Cricbuzz Fixture", "https://www.cricbuzz.com" + m))
-    return results
-
-def detect_revenue_angle(text):
-    t = text.lower()
-    if "sponsor" in t or "brand partner" in t:
-        return "sponsorship"
-    if "broadcast" in t or "streaming" in t:
-        return "media_rights"
-    if "ticket" in t:
-        return "ticketing"
-    if "auction" in t or "draft" in t:
-        return "player_market"
-    return "general"
-
-def detect_decision_signal(text):
-    roles = ["ceo","director","head","commercial","marketing","sponsorship"]
-    return [r for r in roles if r in text.lower()]
 
 def extended_discover(days):
     queue = load_json(QUEUE_FILE, {})
@@ -245,8 +201,12 @@ def extended_discover(days):
         "sports broadcast deal india",
     ]
 
+    # =========================
+    # GOOGLE INDEX SCAN
+    # =========================
     for q in queries:
         links = google_index_scan(q)
+
         for link in links:
             if link in seen_links:
                 continue
@@ -254,6 +214,7 @@ def extended_discover(days):
             html = http_fetch(link)
             if not html:
                 continue
+
             if not is_valid_league(html):
                 continue
 
@@ -265,10 +226,14 @@ def extended_discover(days):
             revenue = detect_revenue_angle(html)
             roles = detect_decision_signal(html)
 
+            confidence = calculate_confidence(html, "google", revenue, roles)
+
             queue[sig] = {
                 "title": q,
                 "link": link,
                 "score": score,
+                "confidence": confidence,
+                "priority": classify_priority(confidence),
                 "released": False,
                 "date": datetime.utcnow().isoformat(),
                 "source": "google",
@@ -281,7 +246,11 @@ def extended_discover(days):
                 "date": datetime.utcnow().isoformat()
             })
 
+    # =========================
+    # CRICBUZZ FIXTURE SCAN
+    # =========================
     fixtures = cricbuzz_fixture_scan()
+
     for title, link in fixtures:
         if link in seen_links:
             continue
@@ -290,15 +259,22 @@ def extended_discover(days):
         if sig in queue:
             continue
 
+        revenue = "media_rights"
+        roles = []
+
+        confidence = calculate_confidence(title, "cricbuzz", revenue, roles)
+
         queue[sig] = {
             "title": title,
             "link": link,
             "score": 70,
+            "confidence": confidence,
+            "priority": classify_priority(confidence),
             "released": False,
             "date": datetime.utcnow().isoformat(),
             "source": "cricbuzz",
-            "revenue_angle": "media_rights",
-            "decision_roles": []
+            "revenue_angle": revenue,
+            "decision_roles": roles
         }
 
         seen.append({
@@ -310,27 +286,81 @@ def extended_discover(days):
     save_json_atomic(QUEUE_FILE, queue)
 
 # ============================================================
+# PHASE 2.15 - CONFIDENCE ENGINE
+# ============================================================
+
+def calculate_confidence(text, source, revenue, roles):
+    score = 40
+
+    t = text.lower()
+
+    # Cricket density
+    cricket_hits = sum(1 for k in CRICKET_PRIORITY if k in t)
+    score += cricket_hits * 10
+
+    # Revenue weight
+    if revenue == "media_rights":
+        score += 20
+    elif revenue == "sponsorship":
+        score += 15
+    elif revenue == "player_market":
+        score += 10
+
+    # Decision-maker boost
+    score += len(roles) * 5
+
+    # Source trust weighting
+    if source == "rss":
+        score += 10
+    elif source == "google":
+        score += 5
+    elif source == "cricbuzz":
+        score += 15
+
+    return min(score, 100)
+
+
+def classify_priority(confidence):
+    if confidence >= 75:
+        return "HIGH"
+    elif confidence >= 55:
+        return "MEDIUM"
+    return "LOW"
+
+# ============================================================
 # DELIVERY ENGINE
 # ============================================================
 
 def build_report(limit=20):
     queue = load_json(QUEUE_FILE, {})
-    items = [v for v in queue.values() if not v["released"]]
+    items = [v for v in queue.values() if not v.get("released", False)]
 
     if not items:
         return None
 
-    items.sort(key=lambda x: x["score"], reverse=True)
+    # Keep original sorting by score
+    items.sort(key=lambda x: x.get("score", 0), reverse=True)
+
     selected = items[:limit]
 
     report = "Sports Radar Report\n\n"
 
     for item in selected:
-        title = escape_md(item["title"])
-        report += f"({item['score']}) [{title}]({item['link']})\n\n"
+        title = escape_md(item.get("title", "Untitled"))
+        link = item.get("link", "#")
+
+        # Backward-safe fields
+        score = item.get("score", 0)
+        confidence = item.get("confidence", 0)
+        priority = item.get("priority", "NA")
+        revenue = item.get("revenue_angle", "general")
+
+        report += f"[{priority}] ({confidence}) [{title}]({link}) - {revenue}\n\n"
+
         item["released"] = True
 
     save_json_atomic(QUEUE_FILE, queue)
+
     return report
 
 # ============================================================
