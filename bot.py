@@ -7,12 +7,12 @@ import threading
 import requests
 import re
 import hashlib
-
-import telebot
 import feedparser
 
-from urllib.parse import quote, urlparse
-from datetime import datetime, timedelta, date, timezone
+from urllib.parse import quote
+from datetime import datetime, timezone
+
+import telebot
 
 # ============================================================
 # CORE CONFIG
@@ -28,19 +28,17 @@ if not BOT_TOKEN or not ADMIN_ID:
     sys.exit(1)
 
 ADMIN_ID = int(ADMIN_ID)
-
-# ⚠️ Removed Markdown to prevent Telegram entity crashes
 bot = telebot.TeleBot(BOT_TOKEN)
 
 DATA_DIR = os.getenv("DATA_DIR", "./data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
 SEEN_FILE = os.path.join(DATA_DIR, "seen_links.json")
-QUEUE_FILE = os.path.join(DATA_DIR, "league_queue.json")
-META_FILE = os.path.join(DATA_DIR, "meta.json")
+QUEUE_FILE = os.path.join(DATA_DIR, "commercial_queue.json")
+WATCHLIST_FILE = os.path.join(DATA_DIR, "watchlist.json")
 
 # ============================================================
-# STORAGE UTILITIES
+# STORAGE
 # ============================================================
 
 def load_json(path, default):
@@ -62,14 +60,12 @@ def save_json_atomic(path, data):
         logging.error(f"Write error: {e}")
 
 # ============================================================
-# NETWORK UTILITIES
+# NETWORK
 # ============================================================
 
 def http_fetch(url, timeout=10):
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0"
-        }
+        headers = {"User-Agent": "Mozilla/5.0"}
         r = requests.get(url, headers=headers, timeout=timeout)
         if r.status_code == 200:
             return r.text
@@ -77,134 +73,109 @@ def http_fetch(url, timeout=10):
         pass
     return ""
 
-def extract_visible_text(html):
+def extract_text(html):
     html = re.sub(r"<script.*?>.*?</script>", "", html, flags=re.DOTALL)
     html = re.sub(r"<style.*?>.*?</style>", "", html, flags=re.DOTALL)
     html = re.sub(r"<[^>]+>", " ", html)
     return re.sub(r"\s+", " ", html).strip()
 
-def generate_sig(text, link):
-    raw = f"{text[:60]}-{urlparse(link).netloc}"
-    return hashlib.md5(raw.encode()).hexdigest()
+def generate_sig(text):
+    return hashlib.md5(text[:80].encode()).hexdigest()
 
 # ============================================================
-# GOOGLE GUARD (CATEGORY BASED)
+# RSS SOURCES (COMMERCIAL TRADE)
 # ============================================================
 
-def google_allowed(category):
-    meta = load_json(META_FILE, {})
-    key = f"last_google_{category}"
-    last = meta.get(key)
-    if not last:
-        return True
-    return (datetime.now(timezone.utc) - datetime.fromisoformat(last)) > timedelta(minutes=5)
-
-def mark_google_scan(category):
-    meta = load_json(META_FILE, {})
-    meta[f"last_google_{category}"] = datetime.now(timezone.utc).isoformat()
-    save_json_atomic(META_FILE, meta)
-
-def google_search(query, category="default"):
-    if not google_allowed(category):
-        logging.info(f"Google cooldown active for {category}")
-        return []
-
-    html = http_fetch(f"https://www.google.com/search?q={quote(query)}&num=10")
-
-    if not html or "unusual traffic" in html.lower():
-        logging.warning("Google blocked or empty response")
-        return []
-
-    mark_google_scan(category)
-
-    return list(set(re.findall(r'/url\?q=(https?://[^&]+)&', html)))
-
-# ============================================================
-# SPONSOR INTELLIGENCE 2.18
-# ============================================================
-
-IPL_TEAMS = [
-    "Lucknow Super Giants", "LSG",
-    "Mumbai Indians", "Chennai Super Kings",
-    "Royal Challengers Bangalore",
-    "Kolkata Knight Riders",
-    "Sunrisers Hyderabad",
-    "Delhi Capitals",
-    "Punjab Kings",
-    "Rajasthan Royals"
+RSS_FEEDS = [
+    "https://www.exchange4media.com/rss.xml",
+    "https://www.afaqs.com/rss.xml",
+    "https://www.campaignindia.in/rss",
+    "https://economictimes.indiatimes.com/marketing/rssfeeds/13352306.cms"
 ]
 
 SPONSOR_TERMS = [
-    "title sponsor", "associate sponsor", "official partner",
-    "principal sponsor", "strategic partner", "jersey sponsor",
-    "powered by"
+    "title sponsor", "associate sponsor",
+    "official partner", "brand ambassador",
+    "campaign launch", "media mandate",
+    "creative mandate", "agency of record",
+    "strategic partner"
 ]
 
-def detect_deal_type(text):
-    t = text.lower()
-    if "title sponsor" in t:
-        return "TITLE SPONSOR"
-    if "associate sponsor" in t:
-        return "ASSOCIATE SPONSOR"
-    if "official partner" in t:
-        return "OFFICIAL PARTNER"
-    return "SPONSOR DEAL"
+AGENCY_TERMS = [
+    "Ogilvy", "DDB", "Publicis", "GroupM",
+    "Wavemaker", "Madison", "Havas",
+    "Leo Burnett", "FCB", "Mudra"
+]
 
-def extract_entities(text):
-    teams = []
-    for team in IPL_TEAMS:
-        if team.lower() in text.lower():
-            teams.append(team)
+# ============================================================
+# CORE DISCOVERY
+# ============================================================
 
-    # Brand detection: words before "sponsor" keyword
-    brands = []
-    matches = re.findall(r"([A-Z][A-Za-z0-9&]{2,30})\s+(?:joins|becomes|announced|signs|as)", text)
-    brands.extend(matches)
-
-    return list(set(brands)), list(set(teams))
-
-def discover_sponsor_intel():
-    queries = [
-        'site:linkedin.com/posts "IPL sponsor"',
-        'site:linkedin.com/posts "title sponsor IPL"',
-        'site:linkedin.com/posts "Lucknow Super Giants" sponsor'
-    ]
+def discover_commercial():
+    watchlist = load_json(WATCHLIST_FILE, {"athletes": [], "teams": []})
+    athletes = watchlist.get("athletes", [])
+    teams = watchlist.get("teams", [])
 
     seen = load_json(SEEN_FILE, [])
     seen_links = {x["link"] for x in seen}
     queue = load_json(QUEUE_FILE, {})
 
-    for q in queries:
-        links = google_search(q, category="sponsor")
+    for feed_url in RSS_FEEDS:
+        feed = feedparser.parse(feed_url)
 
-        for link in links:
+        for entry in feed.entries[:30]:
+
+            title = entry.title
+            link = entry.link
+            summary = getattr(entry, "summary", "")
+
             if link in seen_links:
                 continue
 
-            html = http_fetch(link)
-            if not html:
+            combined = (title + " " + summary).lower()
+
+            if not any(term in combined for term in SPONSOR_TERMS):
                 continue
 
-            text = extract_visible_text(html)
+            deal_type = "COMMERCIAL DEAL"
+            detected_athletes = []
+            detected_teams = []
+            detected_agencies = []
 
-            if not any(term in text.lower() for term in SPONSOR_TERMS):
-                continue
+            for a in athletes:
+                if a.lower() in combined:
+                    detected_athletes.append(a)
+                    deal_type = "ATHLETE ENDORSEMENT"
 
-            brands, teams = extract_entities(text)
+            for t in teams:
+                if t.lower() in combined:
+                    detected_teams.append(t)
+                    deal_type = "TEAM SPONSOR"
 
-            sig = generate_sig(text, link)
+            for agency in AGENCY_TERMS:
+                if agency.lower() in combined:
+                    detected_agencies.append(agency)
+
+            score = 80
+            if "title sponsor" in combined:
+                score = 95
+            if detected_athletes:
+                score += 5
+            if detected_teams:
+                score += 5
+
+            sig = generate_sig(title + link)
             if sig in queue:
                 continue
 
-            deal_type = detect_deal_type(text)
-
             queue[sig] = {
-                "type": "sponsor",
-                "deal_type": deal_type,
-                "brands": brands,
-                "teams": teams,
+                "type": deal_type,
+                "title": title,
                 "link": link,
-                "score": 95 if "title" in deal_type.lower() else 85,
+                "athletes": detected_athletes,
+                "teams": detected_teams,
+                "agencies": detected_agencies,
+                "score": min(score, 100),
                 "released": False,
                 "date": datetime.now(timezone.utc).isoformat()
             }
@@ -221,29 +192,38 @@ def discover_sponsor_intel():
 # DELIVERY
 # ============================================================
 
-def build_report(category):
+def build_report():
     queue = load_json(QUEUE_FILE, {})
-    items = [v for v in queue.values() if not v.get("released") and v.get("type") == category]
+    items = [v for v in queue.values() if not v.get("released")]
 
     if not items:
         return None
 
     items.sort(key=lambda x: x.get("score", 0), reverse=True)
 
-    report = f"{category.upper()} RADAR REPORT\n\n"
+    report = "COMMERCIAL RADAR REPORT\n\n"
 
     for item in items:
-        report += f"🚀 {item.get('deal_type')}\n"
-        report += f"Brand: {', '.join(item.get('brands') or ['Not detected'])}\n"
-        report += f"Team: {', '.join(item.get('teams') or ['Not detected'])}\n"
+
+        report += f"Type: {item.get('type')}\n"
+        report += f"Title: {item.get('title')}\n"
+
+        if item.get("athletes"):
+            report += f"Athlete: {', '.join(item.get('athletes'))}\n"
+
+        if item.get("teams"):
+            report += f"Team: {', '.join(item.get('teams'))}\n"
+
+        if item.get("agencies"):
+            report += f"Agency: {', '.join(item.get('agencies'))}\n"
+
         report += f"Score: {item.get('score')}\n"
         report += f"Link: {item.get('link')}\n"
 
-        # Outreach suggestion layer
         report += "\nSuggested Action:\n"
-        report += "1. Search LinkedIn for Brand Marketing Head\n"
-        report += "2. Search Agency handling this team\n"
-        report += "3. Pitch campaign + match-day hybrid shoot\n\n"
+        report += "1. Find brand marketing head\n"
+        report += "2. Check campaign timeline\n"
+        report += "3. Pitch athlete + match hybrid shoot\n\n"
 
         item["released"] = True
 
@@ -251,7 +231,7 @@ def build_report(category):
     return report
 
 # ============================================================
-# COMMAND HANDLER
+# COMMAND
 # ============================================================
 
 @bot.message_handler(commands=["leads-ad"])
@@ -260,10 +240,10 @@ def handle_ads(message):
         return
 
     def task():
-        bot.send_message(message.chat.id, "Scanning Sponsor Intelligence...")
-        discover_sponsor_intel()
-        rep = build_report("sponsor")
-        bot.send_message(message.chat.id, rep if rep else "No new sponsor deals detected.")
+        bot.send_message(message.chat.id, "Scanning Commercial Intelligence...")
+        discover_commercial()
+        report = build_report()
+        bot.send_message(message.chat.id, report if report else "No new commercial deals detected.")
 
     threading.Thread(target=task).start()
 
@@ -272,7 +252,7 @@ def handle_ads(message):
 # ============================================================
 
 if __name__ == "__main__":
-    logging.info("SAIKAT OS 2.18 ONLINE")
+    logging.info("SAIKAT OS 2.19 COMMERCIAL ENGINE ONLINE")
     while True:
         try:
             bot.infinity_polling(timeout=20, long_polling_timeout=10)
