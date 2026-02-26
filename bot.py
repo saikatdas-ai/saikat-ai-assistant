@@ -15,7 +15,7 @@ from urllib.parse import quote, urlparse
 from datetime import datetime, timedelta, date, timezone
 
 # ============================================================
-# CONFIG
+# CORE CONFIG
 # ============================================================
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -28,11 +28,9 @@ if not BOT_TOKEN or not ADMIN_ID:
     sys.exit(1)
 
 ADMIN_ID = int(ADMIN_ID)
-bot = telebot.TeleBot(BOT_TOKEN, parse_mode="Markdown")
 
-# ============================================================
-# STORAGE (PORTABLE)
-# ============================================================
+# ⚠️ Removed Markdown to prevent Telegram entity crashes
+bot = telebot.TeleBot(BOT_TOKEN)
 
 DATA_DIR = os.getenv("DATA_DIR", "./data")
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -41,18 +39,17 @@ SEEN_FILE = os.path.join(DATA_DIR, "seen_links.json")
 QUEUE_FILE = os.path.join(DATA_DIR, "league_queue.json")
 META_FILE = os.path.join(DATA_DIR, "meta.json")
 
+# ============================================================
+# STORAGE UTILITIES
+# ============================================================
+
 def load_json(path, default):
     if not os.path.exists(path):
         return default
     try:
         with open(path, "r") as f:
-            try:
-                return json.load(f)
-            except json.JSONDecodeError:
-                logging.error(f"Corrupted JSON in {path}. Resetting.")
-                return default
-    except Exception as e:
-        logging.error(f"Read error for {path}: {e}")
+            return json.load(f)
+    except:
         return default
 
 def save_json_atomic(path, data):
@@ -65,214 +62,112 @@ def save_json_atomic(path, data):
         logging.error(f"Write error: {e}")
 
 # ============================================================
-# SAFETY
+# NETWORK UTILITIES
 # ============================================================
 
-def safe_send(chat_id, text):
-    MAX = 3500
-    for i in range(0, len(text), MAX):
-        try:
-            bot.send_message(chat_id, text[i:i+MAX])
-        except Exception as e:
-            logging.error(f"Send failed: {e}")
-
-def escape_md(text):
-    return text.replace("[", "").replace("]", "").replace("(", "").replace(")", "")
-
-# ============================================================
-# SIGNAL CONFIG
-# ============================================================
-
-FRANCHISE_KEYWORDS = [
-    "league","t20","auction","draft",
-    "franchise","season","broadcast deal","sponsorship deal"
-]
-
-CRICKET_PRIORITY = [
-    "ipl","t20","cricket","big bash","psl","cpl"
-]
-
-EXCLUDE = [
-    "nfl","nba","university","college","youth","school"
-]
-
-# ============================================================
-# TEXT CLEANING
-# ============================================================
+def http_fetch(url, timeout=10):
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0"
+        }
+        r = requests.get(url, headers=headers, timeout=timeout)
+        if r.status_code == 200:
+            return r.text
+    except:
+        pass
+    return ""
 
 def extract_visible_text(html):
     html = re.sub(r"<script.*?>.*?</script>", "", html, flags=re.DOTALL)
     html = re.sub(r"<style.*?>.*?</style>", "", html, flags=re.DOTALL)
     html = re.sub(r"<[^>]+>", " ", html)
-    html = re.sub(r"\s+", " ", html)
-    return html.strip()
+    return re.sub(r"\s+", " ", html).strip()
 
-# ============================================================
-# CORE LOGIC
-# ============================================================
-
-def is_valid_league(text):
-    t = text.lower()
-    if any(x in t for x in EXCLUDE):
-        return False
-    if any(k in t for k in FRANCHISE_KEYWORDS):
-        return True
-    return False
-
-def calculate_score(text):
-    score = 50
-    t = text.lower()
-    if any(k in t for k in CRICKET_PRIORITY):
-        score += 30
-    if "auction" in t or "draft" in t:
-        score += 20
-    return min(score, 100)
-
-def signature(text, link):
-    domain = urlparse(link).netloc
-    raw = f"{text}-{domain}"
+def generate_sig(text, link):
+    raw = f"{text[:60]}-{urlparse(link).netloc}"
     return hashlib.md5(raw.encode()).hexdigest()
 
 # ============================================================
-# TAGGING + CONFIDENCE
+# GOOGLE GUARD (CATEGORY BASED)
 # ============================================================
 
-def detect_revenue_angle(text):
-    t = text.lower()
-    if "sponsor" in t or "brand partner" in t:
-        return "sponsorship"
-    if "broadcast" in t or "streaming" in t:
-        return "media_rights"
-    if "ticket" in t:
-        return "ticketing"
-    if "auction" in t or "draft" in t:
-        return "player_market"
-    return "general"
-
-def detect_decision_signal(text):
-    roles = ["ceo","director","head","commercial","marketing","sponsorship"]
-    return [r for r in roles if r in text.lower()]
-
-def calculate_confidence(text, source, revenue, roles):
-    score = 40
-    t = text.lower()
-    score += sum(1 for k in CRICKET_PRIORITY if k in t) * 10
-    if revenue == "media_rights":
-        score += 20
-    elif revenue == "sponsorship":
-        score += 15
-    elif revenue == "player_market":
-        score += 10
-    score += len(roles) * 5
-    if source == "rss":
-        score += 10
-    elif source == "google":
-        score += 5
-    elif source == "cricbuzz":
-        score += 15
-    return min(score, 100)
-
-def classify_priority(conf):
-    if conf >= 75:
-        return "HIGH"
-    if conf >= 55:
-        return "MEDIUM"
-    return "LOW"
-
-# ============================================================
-# NETWORK HELPERS
-# ============================================================
-
-def http_fetch(url, timeout=10):
-    try:
-        headers = {"User-Agent": "Mozilla/5.0"}
-        r = requests.get(url, headers=headers, timeout=timeout)
-        if r.status_code == 200:
-            return r.text
-    except requests.Timeout:
-        logging.warning(f"Timeout fetching {url}")
-    except Exception as e:
-        logging.warning(f"HTTP error {url}: {e}")
-    return ""
-
-# ============================================================
-# GOOGLE WITH COOLDOWN + BLOCK DETECTION
-# ============================================================
-
-def google_allowed():
+def google_allowed(category):
     meta = load_json(META_FILE, {})
-    last = meta.get("last_google_scan")
+    key = f"last_google_{category}"
+    last = meta.get(key)
     if not last:
         return True
-    last_time = datetime.fromisoformat(last)
-    return (datetime.now(timezone.utc) - last_time) > timedelta(minutes=5)
+    return (datetime.now(timezone.utc) - datetime.fromisoformat(last)) > timedelta(minutes=5)
 
-def mark_google_scan():
+def mark_google_scan(category):
     meta = load_json(META_FILE, {})
-    meta["last_google_scan"] = datetime.now(timezone.utc).isoformat()
+    meta[f"last_google_{category}"] = datetime.now(timezone.utc).isoformat()
     save_json_atomic(META_FILE, meta)
 
-def google_index_scan(query):
-    if not google_allowed():
-        logging.info("Google cooldown active. Skipping.")
+def google_search(query, category="default"):
+    if not google_allowed(category):
+        logging.info(f"Google cooldown active for {category}")
         return []
 
-    url = f"https://www.google.com/search?q={quote(query)}&num=10"
-    html = http_fetch(url)
+    html = http_fetch(f"https://www.google.com/search?q={quote(query)}&num=10")
 
-    if not html:
+    if not html or "unusual traffic" in html.lower():
+        logging.warning("Google blocked or empty response")
         return []
 
-    if "unusual traffic" in html.lower() or "verify you are human" in html.lower():
-        logging.warning("Google blocked or CAPTCHA detected.")
-        return []
+    mark_google_scan(category)
 
-    mark_google_scan()
-
-    matches = re.findall(r'/url\?q=(https?://[^&]+)&', html)
-    return list(set(matches))
+    return list(set(re.findall(r'/url\?q=(https?://[^&]+)&', html)))
 
 # ============================================================
-# FIXTURE SCANNING WITH FALLBACK
+# SPONSOR INTELLIGENCE 2.18
 # ============================================================
 
-def cricbuzz_fixture_scan():
-    html = http_fetch("https://www.cricbuzz.com/cricket-schedule", timeout=10)
-    if not html:
-        return []
-    matches = re.findall(r'href="(/cricket-match/[^"]+)"', html)
-    return [("Cricbuzz Fixture", "https://www.cricbuzz.com" + m) for m in matches[:15]]
+IPL_TEAMS = [
+    "Lucknow Super Giants", "LSG",
+    "Mumbai Indians", "Chennai Super Kings",
+    "Royal Challengers Bangalore",
+    "Kolkata Knight Riders",
+    "Sunrisers Hyderabad",
+    "Delhi Capitals",
+    "Punjab Kings",
+    "Rajasthan Royals"
+]
 
-def espn_fixture_fallback():
-    html = http_fetch("https://www.espncricinfo.com/ci/content/match/fixtures_futures.html", timeout=10)
-    if not html:
-        return []
-    matches = re.findall(r'href="(/series/[^"]+)"', html)
-    return [("ESPN Fixture", "https://www.espncricinfo.com" + m) for m in matches[:10]]
+SPONSOR_TERMS = [
+    "title sponsor", "associate sponsor", "official partner",
+    "principal sponsor", "strategic partner", "jersey sponsor",
+    "powered by"
+]
 
-# ============================================================
-# RSS DISCOVERY
-# ============================================================
+def detect_deal_type(text):
+    t = text.lower()
+    if "title sponsor" in t:
+        return "TITLE SPONSOR"
+    if "associate sponsor" in t:
+        return "ASSOCIATE SPONSOR"
+    if "official partner" in t:
+        return "OFFICIAL PARTNER"
+    return "SPONSOR DEAL"
 
-def fetch_rss(query, days):
-    results = []
-    past = (date.today() - timedelta(days=days)).strftime("%Y-%m-%d")
-    url = f"https://news.google.com/rss/search?q={quote(query)}+after:{past}&hl=en-IN&gl=IN&ceid=IN:en"
-    try:
-        feed = feedparser.parse(url)
-        for entry in feed.entries[:25]:
-            results.append((entry.title, entry.link))
-    except:
-        pass
-    return results
+def extract_entities(text):
+    teams = []
+    for team in IPL_TEAMS:
+        if team.lower() in text.lower():
+            teams.append(team)
 
-def discover(days):
+    # Brand detection: words before "sponsor" keyword
+    brands = []
+    matches = re.findall(r"([A-Z][A-Za-z0-9&]{2,30})\s+(?:joins|becomes|announced|signs|as)", text)
+    brands.extend(matches)
+
+    return list(set(brands)), list(set(teams))
+
+def discover_sponsor_intel():
     queries = [
-        "franchise league india",
-        "t20 league season",
-        "league auction cricket",
-        "state t20 league",
-        "broadcast deal league"
+        'site:linkedin.com/posts "IPL sponsor"',
+        'site:linkedin.com/posts "title sponsor IPL"',
+        'site:linkedin.com/posts "Lucknow Super Giants" sponsor'
     ]
 
     seen = load_json(SEEN_FILE, [])
@@ -280,112 +175,44 @@ def discover(days):
     queue = load_json(QUEUE_FILE, {})
 
     for q in queries:
-        for title, link in fetch_rss(q, days):
+        links = google_search(q, category="sponsor")
+
+        for link in links:
             if link in seen_links:
                 continue
-            if not is_valid_league(title):
-                continue
 
-            sig = signature(title, link)
-            if sig in queue:
-                continue
-
-            revenue = detect_revenue_angle(title)
-            roles = detect_decision_signal(title)
-            conf = calculate_confidence(title, "rss", revenue, roles)
-
-            queue[sig] = {
-                "title": title,
-                "link": link,
-                "score": calculate_score(title),
-                "confidence": conf,
-                "priority": classify_priority(conf),
-                "released": False,
-                "date": datetime.now(timezone.utc).isoformat(),
-                "source": "rss",
-                "revenue_angle": revenue,
-                "decision_roles": roles
-            }
-
-            seen.append({"link": link, "date": datetime.now(timezone.utc).isoformat()})
-
-    save_json_atomic(SEEN_FILE, seen)
-    save_json_atomic(QUEUE_FILE, queue)
-
-# ============================================================
-# EXTENDED DISCOVERY
-# ============================================================
-
-def extended_discover():
-    queue = load_json(QUEUE_FILE, {})
-    seen = load_json(SEEN_FILE, [])
-    seen_links = {x["link"] for x in seen}
-
-    queries = ["league expansion cricket", "sports broadcast deal india"]
-
-    for q in queries:
-        for link in google_index_scan(q):
-            if link in seen_links:
-                continue
             html = http_fetch(link)
             if not html:
                 continue
 
             text = extract_visible_text(html)
-            if not is_valid_league(text):
+
+            if not any(term in text.lower() for term in SPONSOR_TERMS):
                 continue
 
-            sig = signature(text[:100], link)
+            brands, teams = extract_entities(text)
+
+            sig = generate_sig(text, link)
             if sig in queue:
                 continue
 
-            revenue = detect_revenue_angle(text)
-            roles = detect_decision_signal(text)
-            conf = calculate_confidence(text, "google", revenue, roles)
+            deal_type = detect_deal_type(text)
 
             queue[sig] = {
-                "title": q,
+                "type": "sponsor",
+                "deal_type": deal_type,
+                "brands": brands,
+                "teams": teams,
                 "link": link,
-                "score": calculate_score(text),
-                "confidence": conf,
-                "priority": classify_priority(conf),
+                "score": 95 if "title" in deal_type.lower() else 85,
                 "released": False,
-                "date": datetime.now(timezone.utc).isoformat(),
-                "source": "google",
-                "revenue_angle": revenue,
-                "decision_roles": roles
+                "date": datetime.now(timezone.utc).isoformat()
             }
 
-            seen.append({"link": link, "date": datetime.now(timezone.utc).isoformat()})
-
-    fixtures = cricbuzz_fixture_scan()
-    if not fixtures:
-        fixtures = espn_fixture_fallback()
-
-    for title, link in fixtures:
-        if link in seen_links:
-            continue
-
-        sig = signature(title, link)
-        if sig in queue:
-            continue
-
-        conf = calculate_confidence(title, "cricbuzz", "media_rights", [])
-
-        queue[sig] = {
-            "title": title,
-            "link": link,
-            "score": 70,
-            "confidence": conf,
-            "priority": classify_priority(conf),
-            "released": False,
-            "date": datetime.now(timezone.utc).isoformat(),
-            "source": "fixture",
-            "revenue_angle": "media_rights",
-            "decision_roles": []
-        }
-
-        seen.append({"link": link, "date": datetime.now(timezone.utc).isoformat()})
+            seen.append({
+                "link": link,
+                "date": datetime.now(timezone.utc).isoformat()
+            })
 
     save_json_atomic(SEEN_FILE, seen)
     save_json_atomic(QUEUE_FILE, queue)
@@ -394,62 +221,61 @@ def extended_discover():
 # DELIVERY
 # ============================================================
 
-def build_report(limit=20):
+def build_report(category):
     queue = load_json(QUEUE_FILE, {})
-    items = [v for v in queue.values() if not v.get("released")]
+    items = [v for v in queue.values() if not v.get("released") and v.get("type") == category]
 
     if not items:
         return None
 
-    items.sort(key=lambda x: x.get("confidence", 0), reverse=True)
-    selected = items[:limit]
+    items.sort(key=lambda x: x.get("score", 0), reverse=True)
 
-    report = "Sports Radar Report\n\n"
+    report = f"{category.upper()} RADAR REPORT\n\n"
 
-    for item in selected:
-        title = escape_md(item.get("title", "Untitled"))
-        link = item.get("link", "#")
-        priority = item.get("priority", "NA")
-        conf = item.get("confidence", 0)
-        revenue = item.get("revenue_angle", "general")
+    for item in items:
+        report += f"🚀 {item.get('deal_type')}\n"
+        report += f"Brand: {', '.join(item.get('brands') or ['Not detected'])}\n"
+        report += f"Team: {', '.join(item.get('teams') or ['Not detected'])}\n"
+        report += f"Score: {item.get('score')}\n"
+        report += f"Link: {item.get('link')}\n"
 
-        report += f"[{priority}] ({conf}) [{title}]({link}) - {revenue}\n\n"
+        # Outreach suggestion layer
+        report += "\nSuggested Action:\n"
+        report += "1. Search LinkedIn for Brand Marketing Head\n"
+        report += "2. Search Agency handling this team\n"
+        report += "3. Pitch campaign + match-day hybrid shoot\n\n"
+
         item["released"] = True
 
     save_json_atomic(QUEUE_FILE, queue)
     return report
 
 # ============================================================
-# COMMANDS
+# COMMAND HANDLER
 # ============================================================
 
-def run_manual(chat_id):
-    safe_send(chat_id, "Sports Radar running...")
-    discover(7)
-    extended_discover()
-    report = build_report(20)
-    if not report:
-        safe_send(chat_id, "No new leads.")
-    else:
-        safe_send(chat_id, report)
-
-@bot.message_handler(commands=["leads-sports"])
-def handle_leads(message):
+@bot.message_handler(commands=["leads-ad"])
+def handle_ads(message):
     if message.from_user.id != ADMIN_ID:
         return
-    threading.Thread(target=run_manual, args=(message.chat.id,)).start()
+
+    def task():
+        bot.send_message(message.chat.id, "Scanning Sponsor Intelligence...")
+        discover_sponsor_intel()
+        rep = build_report("sponsor")
+        bot.send_message(message.chat.id, rep if rep else "No new sponsor deals detected.")
+
+    threading.Thread(target=task).start()
 
 # ============================================================
 # RUNNER
 # ============================================================
 
 if __name__ == "__main__":
-    delay = 5
+    logging.info("SAIKAT OS 2.18 ONLINE")
     while True:
         try:
             bot.infinity_polling(timeout=20, long_polling_timeout=10)
-            delay = 5
         except Exception as e:
-            logging.error(f"Polling crash: {e}")
-            time.sleep(delay)
-            delay = min(delay * 2, 300)
+            logging.error(f"Polling error: {e}")
+            time.sleep(10)
