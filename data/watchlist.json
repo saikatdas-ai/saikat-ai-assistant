@@ -19,3 +19,6 @@
     "Sunrisers Hyderabad"
   ]
 }
+"agencies": ["RISE Worldwide", "Baseline Ventures", "Cornerstone", "JSW Sports", "Ogilvy", "Schbang", "Havas", "Madison"],
+  "cities": ["Mumbai", "Delhi", "Bangalore", "Kolkata", "Hyderabad"]
+}
