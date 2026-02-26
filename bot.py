@@ -1,4 +1,4 @@
-# bot.py -- SAIKAT OS Phase 2.25.2 (Hardened)
+# bot.py -- SAIKAT OS Phase 2.26
 import os
 import sys
 import json
@@ -9,44 +9,46 @@ import requests
 import re
 import hashlib
 import calendar
+from collections import OrderedDict
+from datetime import datetime, timedelta, timezone
 
 import feedparser
 from urllib.parse import quote
-from datetime import datetime, timedelta, timezone
-
 import telebot
 
 # ============================================================
-# CONFIG
+# CONFIG / INITIALIZATION
 # ============================================================
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 BOT_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 ADMIN_ID = os.environ.get("ADMIN_USER_ID")
+DATA_DIR = os.getenv("DATA_DIR", "./data")
+DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
 
 if not BOT_TOKEN or not ADMIN_ID:
     logging.critical("Missing TELEGRAM_TOKEN or ADMIN_USER_ID")
     sys.exit(1)
 
 ADMIN_ID = int(ADMIN_ID)
-# Use default parse mode (none) to avoid entity parsing issues
 bot = telebot.TeleBot(BOT_TOKEN)
 
-DATA_DIR = os.getenv("DATA_DIR", "./data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
-SEEN_FILE = os.path.join(DATA_DIR, "seen_links.json")
-QUEUE_FILE = os.path.join(DATA_DIR, "commercial_queue.json")
-WATCHLIST_FILE = os.path.join(DATA_DIR, "watchlist.json")
-META_FILE = os.path.join(DATA_DIR, "meta.json")
+SEEN_PATH = os.path.join(DATA_DIR, "seen_links.json")
+QUEUE_PATH = os.path.join(DATA_DIR, "commercial_queue.json")
+WATCH_PATH = os.path.join(DATA_DIR, "watchlist.json")
+META_PATH = os.path.join(DATA_DIR, "meta.json")
 
 # ============================================================
-# GLOBALS
+# TUNABLES (safe defaults)
 # ============================================================
-scan_lock = threading.Lock()   # prevents concurrent scans
-DEEP_FETCH_PER_FEED = 8
-SEEN_PURGE_DAYS = 30
-QUEUE_RELEASED_PURGE_DAYS = 30
+MAX_SEEN = int(os.getenv("MAX_SEEN", "5000"))            # LRU cap for seen links
+MAX_QUEUE = int(os.getenv("MAX_QUEUE", "1500"))          # LRU cap for queue items
+DEEP_FETCH_PER_FEED = int(os.getenv("DEEP_FETCH_PER_FEED", "8"))
+SEEN_PURGE_DAYS = int(os.getenv("SEEN_PURGE_DAYS", "30"))
+QUEUE_RELEASED_PURGE_DAYS = int(os.getenv("QUEUE_RELEASED_PURGE_DAYS", "30"))
+FEED_ITEM_LIMIT = int(os.getenv("FEED_ITEM_LIMIT", "25"))
 
 RSS_FEEDS = [
     "https://www.exchange4media.com/rss.xml",
@@ -60,27 +62,30 @@ RSS_FEEDS = [
 ]
 
 MANDATE_WORDS = [
-    "mandate",
-    "account move",
-    "creative duties",
-    "agency of record",
-    "retains",
-    "account win"
+    "mandate", "account move", "creative duties", "agency of record",
+    "retains", "account win", "bags mandate"
 ]
-
 GENERIC_MONEY = [
-    "partner",
-    "partnership",
-    "signs",
-    "appoint",
-    "appointed",
-    "onboards",
-    "deal",
-    "strategic alliance"
+    "partner", "partnership", "signs", "appoint", "appointed",
+    "onboards", "deal", "strategic alliance", "creative mandate"
 ]
 
 # ============================================================
-# STORAGE UTILITIES (with purge)
+# THREAD LOCK (prevent concurrent scans)
+# ============================================================
+scan_lock = threading.Lock()
+
+# ============================================================
+# LRU in-memory structures
+# - seen_lru: OrderedDict of link -> {"link":..., "date": ISO}
+# - queue_lru: OrderedDict of sig -> item dict
+# They are persisted on disk in atomic fashion.
+# ============================================================
+seen_lru = OrderedDict()
+queue_lru = OrderedDict()
+
+# ============================================================
+# UTIL: JSON load/save atomic + purge helpers
 # ============================================================
 def load_json(path, default):
     if not os.path.exists(path):
@@ -89,53 +94,8 @@ def load_json(path, default):
         with open(path, "r") as f:
             return json.load(f)
     except Exception as e:
-        logging.warning(f"Failed to load JSON {path}: {e}")
+        logging.warning(f"load_json failed {path}: {e}")
         return default
-
-def purge_seen(seen):
-    cutoff = datetime.now(timezone.utc) - timedelta(days=SEEN_PURGE_DAYS)
-    new = [s for s in seen if parse_iso(s.get("date")) >= cutoff]
-    return new
-
-def purge_queue(queue):
-    cutoff = datetime.now(timezone.utc) - timedelta(days=QUEUE_RELEASED_PURGE_DAYS)
-    new = {}
-    for k, v in queue.items():
-        if not v.get("released"):
-            new[k] = v
-            continue
-        d = parse_iso(v.get("date"))
-        if d and d >= cutoff:
-            new[k] = v
-    return new
-
-def save_json_atomic_with_purge(seen_path, seen_data, queue_path, queue_data):
-    # Purge seen older than SEEN_PURGE_DAYS
-    try:
-        seen_data = purge_seen(seen_data)
-    except Exception:
-        pass
-    try:
-        queue_data = purge_queue(queue_data)
-    except Exception:
-        pass
-
-    # Atomic write both files separately
-    try:
-        tmp = seen_path + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(seen_data, f)
-        os.replace(tmp, seen_path)
-    except Exception as e:
-        logging.error(f"Write error (seen): {e}")
-
-    try:
-        tmpq = queue_path + ".tmp"
-        with open(tmpq, "w") as f:
-            json.dump(queue_data, f)
-        os.replace(tmpq, queue_path)
-    except Exception as e:
-        logging.error(f"Write error (queue): {e}")
 
 def save_json_atomic(path, data):
     tmp = path + ".tmp"
@@ -144,25 +104,79 @@ def save_json_atomic(path, data):
             json.dump(data, f)
         os.replace(tmp, path)
     except Exception as e:
-        logging.error(f"Write error: {e}")
+        logging.error(f"save_json_atomic failed {path}: {e}")
 
+def purge_seen_list(list_of_seen):
+    cutoff = datetime.now(timezone.utc) - timedelta(days=SEEN_PURGE_DAYS)
+    retained = [s for s in list_of_seen if parse_iso(s.get("date")) and parse_iso(s.get("date")) >= cutoff]
+    return retained
+
+def purge_queue_dict(qdict):
+    cutoff = datetime.now(timezone.utc) - timedelta(days=QUEUE_RELEASED_PURGE_DAYS)
+    new_q = {}
+    for k, v in qdict.items():
+        if not v.get("released"):
+            new_q[k] = v
+            continue
+        d = parse_iso(v.get("date"))
+        if d and d >= cutoff:
+            new_q[k] = v
+    return new_q
+
+# ============================================================
+# TIME / PARSE HELPERS
+# ============================================================
 def parse_iso(s):
     try:
         return datetime.fromisoformat(s).astimezone(timezone.utc)
     except Exception:
         return None
 
+def utc_now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
 # ============================================================
-# NETWORK / PARSING UTILITIES
+# STARTUP: load persisted files into LRU structures
 # ============================================================
-def http_fetch(url, timeout=10):
+def load_state():
+    global seen_lru, queue_lru
+    # seen -> list of {link, date}
+    seen_list = load_json(SEEN_PATH, [])
+    # keep last MAX_SEEN items (they already sorted by append time)
+    if isinstance(seen_list, list):
+        tail = seen_list[-MAX_SEEN:]
+        seen_lru = OrderedDict((s["link"], s) for s in tail if s.get("link"))
+    else:
+        seen_lru = OrderedDict()
+    # queue -> dict sig->item
+    queue_dict = load_json(QUEUE_PATH, {})
+    if isinstance(queue_dict, dict):
+        # keep most recent MAX_QUEUE by date (sort by date)
+        items = list(queue_dict.items())
+        # items are (sig, obj)
+        items_sorted = sorted(items, key=lambda kv: kv[1].get("date", ""), reverse=False)
+        tail = items_sorted[-MAX_QUEUE:]
+        queue_lru = OrderedDict(tail)
+    else:
+        queue_lru = OrderedDict()
+
+    # meta defaults
+    meta = load_json(META_PATH, {})
+    return meta
+
+meta = load_state()
+
+# ============================================================
+# NETWORK + PARSING helpers (conservative)
+# ============================================================
+def http_fetch(url, timeout=8):
     try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) SAIKAT-OS/2.25.2"}
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) SAIKAT-OS/2.26"}
         r = requests.get(url, headers=headers, timeout=timeout)
         if r.status_code == 200:
             return r.text
     except Exception as e:
-        logging.debug(f"Fetch fail {url}: {e}")
+        logging.debug(f"http_fetch fail {url}: {e}")
     return ""
 
 def extract_text(html):
@@ -173,307 +187,371 @@ def extract_text(html):
     return re.sub(r"\s+", " ", html).strip()
 
 def normalize_title(title):
-    return re.sub(r"\W+", "", title.lower())
+    return re.sub(r"\W+", "", (title or "").lower())
 
-def generate_linkedin_url(entity, role):
-    if not entity:
+def sig_from_title(title):
+    return hashlib.md5(normalize_title(title).encode()).hexdigest()
+
+# ============================================================
+# Regex builder with word-boundary safe matching
+# ============================================================
+def compile_word_regex(items):
+    items = [i for i in (items or []) if isinstance(i, str) and i.strip()]
+    if not items:
         return None
-    # Encode only the search query
-    return f"https://www.linkedin.com/search/results/people/?keywords={quote(entity + ' ' + role)}"
+    escaped = [re.escape(i) for i in items]
+    pattern = r"\b(?:" + "|".join(escaped) + r")\b"
+    try:
+        return re.compile(pattern, flags=re.IGNORECASE)
+    except Exception as e:
+        logging.debug(f"compile_word_regex failed: {e}")
+        return None
 
-def chunked_send(chat_id, text):
+# ============================================================
+# TELEGRAM safe send (chunked)
+# ============================================================
+def safe_send(chat_id, text):
     if not text:
         return
     MAX = 3500
-    # split on separators if present to keep whole records intact
-    parts = text.split("\n" + "-" * 35 + "\n")
+    parts = text.split("\n" + "-"*35 + "\n")
     current = ""
     for p in parts:
-        block = p + "\n" + "-" * 35 + "\n"
+        block = p + "\n" + "-"*35 + "\n"
         if len(current) + len(block) < MAX:
             current += block
         else:
             try:
                 bot.send_message(chat_id, current)
             except Exception as e:
-                logging.error(f"Send failed chunk: {e}")
+                logging.error(f"safe_send failed chunk: {e}")
             current = block
     if current:
         try:
             bot.send_message(chat_id, current)
         except Exception as e:
-            logging.error(f"Final send failed: {e}")
+            logging.error(f"safe_send final failed: {e}")
 
 # ============================================================
-# COMPILED REGEX HELPERS (exact word matching)
+# Persist in-memory LRU -> disk (atomic with purge)
+# - Convert seen_lru OrderedDict to list in chronological order
+# - Convert queue_lru to dict
 # ============================================================
-def compile_word_regex(list_of_terms):
-    if not list_of_terms:
-        return None
-    # escape each term, then join as alternation; use word boundaries
-    escaped = [re.escape(t) for t in list_of_terms if t and isinstance(t, str)]
-    if not escaped:
-        return None
-    pattern = r"\b(?:" + "|".join(escaped) + r")\b"
+def persist_state():
     try:
-        return re.compile(pattern, flags=re.IGNORECASE)
-    except Exception:
-        return None
+        seen_list = list(seen_lru.values())
+        # purge old seen entries to keep disk small
+        seen_list = purge_seen_list(seen_list)
+        # queue dict
+        queue_dict = dict(queue_lru)
+        queue_dict = purge_queue_dict(queue_dict)
+        # atomic writes
+        save_json_atomic(SEEN_PATH, seen_list)
+        save_json_atomic(QUEUE_PATH, queue_dict)
+    except Exception as e:
+        logging.error(f"persist_state failed: {e}")
 
 # ============================================================
-# CORE DISCOVERY (Hardened)
+# Feed debug telemetry collection
+# ============================================================
+def update_meta_feed_stats(feed_url, reason):
+    if not DEBUG_MODE:
+        return
+    global meta
+    fs = meta.get("feed_stats", {})
+    f = fs.get(feed_url, {"total": 0, "accepted": 0, "rejected": {}, "final": 0})
+    f["total"] = f.get("total", 0) + 1
+    if reason == "accepted":
+        f["accepted"] = f.get("accepted", 0) + 1
+    else:
+        rej = f["rejected"]
+        rej[reason] = rej.get(reason, 0) + 1
+        f["rejected"] = rej
+    fs[feed_url] = f
+    meta["feed_stats"] = fs
+    meta["last_run"] = utc_now_iso()
+    save_json_atomic(META_PATH, meta)
+
+# ============================================================
+# Core Discovery: discover_commercial (Phase 2.26)
+# - Uses in-memory watchlist (watchlist.json)
+# - Exact word regex checks
+# - Stage1 lightweight checks and recency gate with calendar.timegm
+# - Deep fetch limit per feed
+# - Title-normalized dedupe -> sig
+# - Adds to queue_lru and seen_lru (LRU semantics)
 # ============================================================
 def discover_commercial():
-    # Acquire the lock inside caller; this function assumes safe single-run
-    wl = load_json(WATCHLIST_FILE, {})
-    seen = load_json(SEEN_FILE, [])
-    queue = load_json(QUEUE_FILE, {})
+    global seen_lru, queue_lru, meta
 
-    seen_links = {s.get("link") for s in seen if s.get("link")}
-
-    # Build regexes
+    # Load watchlist (dynamic)
+    wl = load_json(WATCH_PATH, {})
+    # build regexes (word-boundary)
     athletes_re = compile_word_regex(wl.get("athletes", []))
     teams_re = compile_word_regex(wl.get("teams", []))
     agencies_re = compile_word_regex(wl.get("agencies", []))
     brands_re = compile_word_regex((wl.get("brands", []) or []) + (wl.get("conglomerates", []) or []))
     cities_re = compile_word_regex(wl.get("cities", []))
-    commercial_re = compile_word_regex(wl.get("commercial_keywords", []) + GENERIC_MONEY)
+    commercial_re = compile_word_regex((wl.get("commercial_keywords", []) or []) + GENERIC_MONEY)
     mandate_re = compile_word_regex(MANDATE_WORDS)
 
-    # fallback plain lists for checks if regex is None
     def re_search(r, txt):
-        if not r: return False
-        return bool(r.search(txt))
+        return bool(r.search(txt)) if r else False
 
+    # iterate feeds
     for feed_url in RSS_FEEDS:
         try:
             feed = feedparser.parse(feed_url)
         except Exception as e:
-            logging.warning(f"Feed parse failed {feed_url}: {e}")
+            logging.warning(f"feedparser failed {feed_url}: {e}")
             continue
 
         deep_fetch_count = 0
+        # For debug: reset feed counter
+        if DEBUG_MODE:
+            meta.setdefault("feed_stats", {}).setdefault(feed_url, {"total": 0, "accepted": 0, "rejected": {}, "final": 0})
 
-        for entry in feed.entries[:25]:
-            try:
-                title = (entry.title or "").strip()
-                link = (entry.link or "").strip()
-                summary = getattr(entry, "summary", "") or ""
-                if not link:
-                    continue
+        entries = getattr(feed, "entries", [])[:FEED_ITEM_LIMIT]
+        for entry in entries:
+            # very defensive extraction
+            title = (getattr(entry, "title", "") or "").strip()
+            link = (getattr(entry, "link", "") or "").strip()
+            summary = (getattr(entry, "summary", "") or "").strip()
 
-                if link in seen_links:
-                    continue
-
-                stage1_text = (title + " " + summary).lower()
-
-                # Stage1 lightweight checks (exact word boundaries)
-                has_money = re_search(commercial_re, stage1_text)
-                has_mandate = re_search(mandate_re, stage1_text)
-                has_geo = re_search(cities_re, stage1_text) or any(gk in stage1_text for gk in ["india", "ipl", "isl", "bcci", "wpl"])
-
-                matched_athlete = re_search(athletes_re, stage1_text)
-                matched_team = re_search(teams_re, stage1_text)
-                matched_brand = re_search(brands_re, stage1_text)
-                matched_agency_stage1 = re_search(agencies_re, stage1_text)
-
-                # Primary filter: require money-like or mandate or agency mention to proceed
-                if not (has_money or has_mandate or matched_agency_stage1):
-                    continue
-
-                # Secondary gate: require geo or entity or mandate/agency
-                if not (has_geo or matched_athlete or matched_team or matched_brand or matched_agency_stage1 or has_mandate):
-                    continue
-
-                # Recency gate using calendar.timegm for UTC correctness
-                is_old = False
-                pub_struct = getattr(entry, "published_parsed", None) or getattr(entry, "updated_parsed", None)
-                if pub_struct:
-                    pub_ts = calendar.timegm(pub_struct)
-                    pub_date = datetime.fromtimestamp(pub_ts, tz=timezone.utc)
-                    if datetime.now(timezone.utc) - pub_date > timedelta(days=5):
-                        is_old = True
-                if is_old and not has_mandate:
-                    continue
-
-                # Deep fetch (limited)
-                deep_text = ""
-                if deep_fetch_count < DEEP_FETCH_PER_FEED:
-                    deep_html = http_fetch(link)
-                    deep_text = extract_text(deep_html).lower()
-                    deep_fetch_count += 1
-
-                full_text = stage1_text + " " + deep_text
-
-                # Final exact matching
-                detected_athletes = athletes_re.findall(full_text) if athletes_re else []
-                detected_teams = teams_re.findall(full_text) if teams_re else []
-                detected_brands = brands_re.findall(full_text) if brands_re else []
-                detected_agencies = agencies_re.findall(full_text) if agencies_re else []
-                detected_cities = cities_re.findall(full_text) if cities_re else []
-                detected_exec = []  # could be extended from watchlist if provided
-
-                has_mandate_full = re_search(mandate_re, full_text)
-
-                # Title-normalized dedupe (hash on normalized title)
-                sig = hashlib.md5(normalize_title(title).encode()).hexdigest()
-                if sig in queue:
-                    # already queued
-                    continue
-
-                # Scoring
-                score = 50
-                deal_type = "COMMERCIAL SIGNAL"
-                if detected_brands:
-                    score += 10
-                if detected_teams:
-                    score += 15
-                    deal_type = "TEAM DEAL"
-                if detected_athletes:
-                    score += 15
-                    deal_type = "ATHLETE ENDORSEMENT"
-                if detected_agencies:
-                    score += 20
-                    deal_type = "AGENCY SIGNAL"
-                if detected_exec:
-                    score += 10
-                if has_mandate_full:
-                    score += 40
-                    deal_type = "🚨 MANDATE FAST-TRACK"
-                if (detected_brands or detected_athletes or detected_teams) and detected_agencies:
-                    score = 100
-                    deal_type = "🚨 HIGH PRIORITY CAMPAIGN"
-
-                queue[sig] = {
-                    "type": deal_type,
-                    "title": title,
-                    "link": link,
-                    "brands": list(dict.fromkeys([b.strip() for b in detected_brands])) if detected_brands else [],
-                    "teams": list(dict.fromkeys([t.strip() for t in detected_teams])) if detected_teams else [],
-                    "athletes": list(dict.fromkeys([a.strip() for a in detected_athletes])) if detected_athletes else [],
-                    "agencies": list(dict.fromkeys([ag.strip() for ag in detected_agencies])) if detected_agencies else [],
-                    "execution": detected_exec,
-                    "score": min(score, 100),
-                    "released": False,
-                    "date": datetime.now(timezone.utc).isoformat()
-                }
-
-                seen.append({"link": link, "date": datetime.now(timezone.utc).isoformat()})
-                seen_links.add(link)
-
-            except Exception as e:
-                logging.debug(f"entry processing error: {e}")
+            if not link:
+                update_meta_feed_stats(feed_url, "no_link")
                 continue
 
-    # Save with purge
-    try:
-        save_json_atomic_with_purge(SEEN_FILE, seen, QUEUE_FILE, queue)
-    except Exception as e:
-        logging.error(f"Save with purge failed: {e}")
+            # recency gate (use published_parsed or updated_parsed)
+            pub_struct = getattr(entry, "published_parsed", None) or getattr(entry, "updated_parsed", None)
+            if pub_struct:
+                try:
+                    pub_ts = calendar.timegm(pub_struct)  # UTC-safe
+                    pub_dt = datetime.fromtimestamp(pub_ts, tz=timezone.utc)
+                    if datetime.now(timezone.utc) - pub_dt > timedelta(days=5):
+                        update_meta_feed_stats(feed_url, "old")
+                        continue
+                except Exception:
+                    pass
+
+            # Stage1 lightweight combined text
+            stage1_text = (title + " " + summary).lower()
+
+            # Quick checks
+            has_money = re_search(commercial_re, stage1_text)
+            has_mandate = re_search(mandate_re, stage1_text)
+            has_geo = re_search(cities_re, stage1_text) or any(gk in stage1_text for gk in ["india", "ipl", "isl", "bcci", "wpl"])
+            matched_athlete = re_search(athletes_re, stage1_text)
+            matched_team = re_search(teams_re, stage1_text)
+            matched_brand = re_search(brands_re, stage1_text)
+            matched_agency_stage1 = re_search(agencies_re, stage1_text)
+
+            # allow lightweight agency mention to pass to deep fetch (fix requested logic)
+            if not (has_money or has_mandate or matched_agency_stage1):
+                update_meta_feed_stats(feed_url, "money_miss")
+                continue
+
+            if not (has_geo or matched_athlete or matched_team or matched_brand or matched_agency_stage1 or has_mandate):
+                update_meta_feed_stats(feed_url, "entity_miss")
+                continue
+
+            # de-dup by link earlier: if seen link skip (fast)
+            if link in seen_lru:
+                update_meta_feed_stats(feed_url, "seen_link")
+                continue
+
+            # deep fetch if needed (limit)
+            deep_text = ""
+            if deep_fetch_count < DEEP_FETCH_PER_FEED:
+                deep_html = http_fetch(link)
+                deep_text = extract_text(deep_html).lower()
+                deep_fetch_count += 1
+
+            full_text = stage1_text + " " + deep_text
+
+            # final detection using regexes on full_text
+            detected_athletes = athletes_re.findall(full_text) if athletes_re else []
+            detected_teams = teams_re.findall(full_text) if teams_re else []
+            detected_brands = brands_re.findall(full_text) if brands_re else []
+            detected_agencies = agencies_re.findall(full_text) if agencies_re else []
+            detected_cities = cities_re.findall(full_text) if cities_re else []
+
+            has_mandate_full = re_search(mandate_re, full_text)
+            has_money_full = re_search(commercial_re, full_text)
+
+            # If after deep fetch no money signal and no mandate, drop it
+            if not (has_money_full or has_mandate_full):
+                update_meta_feed_stats(feed_url, "deep_money_miss")
+                continue
+
+            # Title-normalized dedupe sig
+            sig = sig_from_title(title)
+            if sig in queue_lru:
+                update_meta_feed_stats(feed_url, "sig_exists")
+                # still mark link as seen to avoid repeats across feeds
+                seen_lru[link] = {"link": link, "date": utc_now_iso()}
+                # move to end (LRU behavior)
+                seen_lru.move_to_end(link)
+                if len(seen_lru) > MAX_SEEN:
+                    seen_lru.popitem(last=False)
+                continue
+
+            # scoring
+            score = 50
+            item_type = "COMMERCIAL SIGNAL"
+            if detected_brands:
+                score += 10
+            if detected_teams:
+                score += 15; item_type = "TEAM DEAL"
+            if detected_athletes:
+                score += 15; item_type = "ATHLETE ENDORSEMENT"
+            if detected_agencies:
+                score += 20; item_type = "AGENCY SIGNAL"
+            if has_mandate_full:
+                score += 40; item_type = "MANDATE FAST-TRACK"
+            if (detected_brands or detected_athletes or detected_teams) and detected_agencies:
+                score = 100; item_type = "HIGH PRIORITY CAMPAIGN"
+
+            item = {
+                "type": item_type,
+                "title": title,
+                "link": link,
+                "brands": list(dict.fromkeys(detected_brands)) if detected_brands else [],
+                "teams": list(dict.fromkeys(detected_teams)) if detected_teams else [],
+                "athletes": list(dict.fromkeys(detected_athletes)) if detected_athletes else [],
+                "agencies": list(dict.fromkeys(detected_agencies)) if detected_agencies else [],
+                "cities": list(dict.fromkeys(detected_cities)) if detected_cities else [],
+                "score": min(score, 100),
+                "released": False,
+                "date": utc_now_iso()
+            }
+
+            # insert into queue LRU
+            queue_lru[sig] = item
+            queue_lru.move_to_end(sig)
+            if len(queue_lru) > MAX_QUEUE:
+                queue_lru.popitem(last=False)
+
+            # mark seen link LRU
+            seen_lru[link] = {"link": link, "date": utc_now_iso()}
+            seen_lru.move_to_end(link)
+            if len(seen_lru) > MAX_SEEN:
+                seen_lru.popitem(last=False)
+
+            update_meta_feed_stats(feed_url, "accepted")
+            # track final count
+            fs = meta.get("feed_stats", {})
+            fs.setdefault(feed_url, {}).setdefault("final", 0)
+            fs[feed_url]["final"] = fs[feed_url].get("final", 0) + 1
+            meta["feed_stats"] = fs
+
+    # persist state after run
+    persist_state()
+    if DEBUG_MODE:
+        meta["last_run"] = utc_now_iso()
+        save_json_atomic(META_PATH, meta)
 
 # ============================================================
-# REPORTING
+# Reporting build and delivery
 # ============================================================
 def build_report():
-    queue = load_json(QUEUE_FILE, {})
-    items = [v for v in queue.values() if not v.get("released")]
+    # work on snapshot of queue to avoid concurrency issues
+    q_snapshot = list(queue_lru.items())
+    items = [v for k, v in q_snapshot if not v.get("released")]
     if not items:
         return None
 
     items.sort(key=lambda x: x.get("score", 0), reverse=True)
-    report = "📊 SAIKAT OS 2.25.2 - HARDENED\n" + "=" * 35 + "\n\n"
+    report_lines = []
+    header = "SAIKAT OS REVENUE RADAR 2.26\n" + "="*35 + "\n"
+    report_lines.append(header)
+    for it in items:
+        lines = []
+        lines.append(f"TYPE: {it.get('type')}")
+        lines.append(f"SCORE: {it.get('score')}/100")
+        lines.append(f"TITLE: {it.get('title')}")
+        if it.get("brands"):
+            lines.append("BRAND: " + ", ".join(it.get("brands")))
+        if it.get("teams"):
+            lines.append("TEAM: " + ", ".join(it.get("teams")))
+        if it.get("athletes"):
+            lines.append("ATHLETE: " + ", ".join(it.get("athletes")))
+        if it.get("agencies"):
+            lines.append("AGENCY: " + ", ".join(it.get("agencies")))
+        lines.append("LINK: " + it.get("link"))
+        # Strike links
+        primary = None
+        if it.get("brands"):
+            primary = it["brands"][0]
+        elif it.get("teams"):
+            primary = it["teams"][0]
+        elif it.get("agencies"):
+            primary = it["agencies"][0]
+        if primary:
+            lines.append("STRIKE LINKS:")
+            lines.append("- Brand Lead: " + generate_linkedin_url_safe(primary, "Marketing Head"))
+            if it.get("agencies"):
+                lines.append("- Agency Lead: " + generate_linkedin_url_safe(it["agencies"][0], "Creative Director"))
+        block = "\n".join(lines)
+        report_lines.append(block)
+        report_lines.append("-"*35)
+        # mark released in the live queue_lru after collecting report
+        # we'll mark after building to avoid interfering with iteration
+    # mark released now
+    for sig, v in list(queue_lru.items()):
+        if not v.get("released"):
+            v["released"] = True
+            queue_lru[sig] = v
+    persist_state()
+    return "\n".join(report_lines)
 
-    for item in items:
-        report += f"[{item['type']}]\n"
-        report += f"SCORE: {item['score']}/100\n"
-        report += f"TITLE: {item['title']}\n"
-        if item.get("brands"):
-            report += f"BRAND: {', '.join(item.get('brands'))}\n"
-        if item.get("teams"):
-            report += f"TEAM: {', '.join(item.get('teams'))}\n"
-        if item.get("athletes"):
-            report += f"ATHLETE: {', '.join(item.get('athletes'))}\n"
-        if item.get("agencies"):
-            report += f"AGENCY: {', '.join(item.get('agencies'))}\n"
-        if item.get("execution"):
-            report += f"EXECUTION: {', '.join(item.get('execution'))}\n"
-
-        report += f"LINK: {item.get('link')}\n\n"
-
-        primary_target = None
-        if item.get("brands"):
-            primary_target = item["brands"][0]
-        elif item.get("teams"):
-            primary_target = item["teams"][0]
-        elif item.get("agencies"):
-            primary_target = item["agencies"][0]
-
-        if primary_target:
-            report += "🎯 STRIKE LINKS:\n"
-            brand_link = generate_linkedin_url(primary_target, "Marketing Head")
-            if brand_link:
-                report += f"- Brand Lead: {brand_link}\n"
-            if item.get("agencies"):
-                agency_link = generate_linkedin_url(item["agencies"][0], "Creative Director")
-                if agency_link:
-                    report += f"- Agency Lead: {agency_link}\n"
-
-        report += "\n" + "-" * 35 + "\n\n"
-        # mark released
-        # we will update the queue file below after building
-        item["released"] = True
-
-    # Write queue back after marking released and purge old released items
-    try:
-        queue = {k: v for k, v in load_json(QUEUE_FILE, {}).items()}
-        # update items marked
-        for k, v in queue.items():
-            if v.get("released"):
-                # leave existing value (expensive but safe) - in-memory updated items already set "released"
-                pass
-        # We'll simply reload, update released flags from items list by matching title+link hashes
-        for i in items:
-            # compute sig same way
-            s = hashlib.md5(re.sub(r"\W+", "", i.get("title", "").lower()).encode()).hexdigest()
-            if s in queue:
-                queue[s]["released"] = True
-        # purge released older than threshold then save
-        save_json_atomic_with_purge(SEEN_FILE, load_json(SEEN_FILE, []), QUEUE_FILE, queue)
-    except Exception as e:
-        logging.error(f"Failed to update queue after report: {e}")
-
-    return report
+def generate_linkedin_url_safe(entity, role):
+    # avoid doubling role words, ensure entity is not empty
+    if not entity:
+        return ""
+    entity = re.sub(r"\s+", " ", entity).strip()
+    q = quote(entity + " " + role)
+    return f"https://www.linkedin.com/search/results/people/?keywords={q}"
 
 # ============================================================
-# TELEGRAM HANDLER (with lock)
+# Telegram handler with lock + optional debug summary
 # ============================================================
 @bot.message_handler(commands=["leads-ad"])
-def handle_ads(message):
+def handle_leads_ad(message):
     if message.from_user.id != ADMIN_ID:
         return
-
-    # try to acquire lock: if already scanning, inform user
-    acquired = scan_lock.acquire(blocking=False)
-    if not acquired:
+    # try acquire lock
+    if not scan_lock.acquire(blocking=False):
         try:
-            bot.send_message(message.chat.id, "Scan already in progress. Please wait for it to finish.")
+            bot.send_message(message.chat.id, "A scan is already running. Wait until it finishes.")
         except:
             pass
         return
 
-    def task():
+    def job():
         try:
             try:
-                bot.send_message(message.chat.id, "Starting Hardened Commercial Scan (2.25.2). This may take 10-60s.")
+                bot.send_message(message.chat.id, "Starting Revenue Scan (Phase 2.26). This may take 10-60s.")
             except:
                 pass
+            # reset feed stats if debug mode
+            if DEBUG_MODE:
+                meta["feed_stats"] = {}
+                save_json_atomic(META_PATH, meta)
             discover_commercial()
-            rep = build_report()
-            if rep:
-                chunked_send(message.chat.id, rep)
+            report = build_report()
+            if report:
+                safe_send(message.chat.id, report)
             else:
                 try:
-                    bot.send_message(message.chat.id, "No high-confidence commercial signals found in this run.")
+                    bot.send_message(message.chat.id, "No high-confidence commercial signals detected in this run.")
+                except:
+                    pass
+            # If debug mode send telemetry summary
+            if DEBUG_MODE:
+                debug_summary = build_debug_summary()
+                try:
+                    bot.send_message(message.chat.id, "DEBUG FEED SUMMARY:\n" + debug_summary)
                 except:
                     pass
         finally:
@@ -482,14 +560,39 @@ def handle_ads(message):
             except RuntimeError:
                 pass
 
-    t = threading.Thread(target=task, daemon=True)
+    t = threading.Thread(target=job, daemon=True)
     t.start()
+
+def build_debug_summary():
+    if not DEBUG_MODE:
+        return ""
+    m = load_json(META_PATH, {})
+    fs = m.get("feed_stats", {})
+    lines = []
+    for feed, data in fs.items():
+        lines.append(f"Feed: {feed}")
+        lines.append(f"  Total items inspected: {data.get('total', 0)}")
+        lines.append(f"  Accepted (to queue): {data.get('final', 0)}")
+        rejected = data.get("rejected", {})
+        if rejected:
+            for reason, count in rejected.items():
+                lines.append(f"  Rejected - {reason}: {count}")
+        lines.append("")
+    return "\n".join(lines)
+
+# ============================================================
+# Bootstrap: save initial (persist current in-memory state)
+# ============================================================
+def bootstrap_persist():
+    persist_state()
+    save_json_atomic(META_PATH, meta)
 
 # ============================================================
 # RUN LOOP
 # ============================================================
 if __name__ == "__main__":
-    logging.info("SAIKAT OS 2.25.2 ONLINE - Hardened (fixes applied)")
+    logging.info("SAIKAT OS 2.26 ONLINE (Performance + Debug). DEBUG_MODE=%s", DEBUG_MODE)
+    bootstrap_persist()
     while True:
         try:
             bot.infinity_polling(timeout=30, long_polling_timeout=20)
