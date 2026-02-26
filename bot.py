@@ -1,17 +1,7 @@
-import os
-import sys
-import json
-import time
-import logging
-import threading
-import requests
-import re
-import hashlib
+import os, sys, json, time, logging, threading, requests, re, hashlib
 import feedparser
-
 from urllib.parse import quote
 from datetime import datetime, timezone
-
 import telebot
 
 # ============================================================
@@ -22,14 +12,13 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 
 BOT_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 ADMIN_ID = os.environ.get("ADMIN_USER_ID")
+DEBUG_MODE = os.environ.get("DEBUG_MODE", "false").lower() == "true"
 
 if not BOT_TOKEN or not ADMIN_ID:
     logging.critical("Missing TELEGRAM_TOKEN or ADMIN_USER_ID")
     sys.exit(1)
 
 ADMIN_ID = int(ADMIN_ID)
-
-# Markdown removed for 100% Telegram stability
 bot = telebot.TeleBot(BOT_TOKEN)
 
 DATA_DIR = os.getenv("DATA_DIR", "./data")
@@ -45,11 +34,14 @@ WATCHLIST_FILE = os.path.join(DATA_DIR, "watchlist.json")
 
 def load_json(path, default):
     if not os.path.exists(path):
+        if DEBUG_MODE:
+            logging.warning(f"{path} not found. Using fallback.")
         return default
     try:
         with open(path, "r") as f:
             return json.load(f)
-    except:
+    except Exception as e:
+        logging.error(f"JSON load error: {e}")
         return default
 
 def save_json_atomic(path, data):
@@ -62,32 +54,28 @@ def save_json_atomic(path, data):
         logging.error(f"Write error: {e}")
 
 # ============================================================
-# NETWORK & PARSING (CONSERVATIVE DEEP FETCH)
+# NETWORK
 # ============================================================
 
-def http_fetch(url, timeout=8):
+def http_fetch(url, timeout=10):
     try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Phase2.20"}
+        headers = {"User-Agent": "Mozilla/5.0 SAIKAT-OS/2.21"}
         r = requests.get(url, headers=headers, timeout=timeout)
-        if r.status_code == 200:
-            return r.text
+        return r.text if r.status_code == 200 else ""
     except Exception as e:
-        logging.warning(f"Fetch failed for {url}: {e}")
-    return ""
+        if DEBUG_MODE:
+            logging.warning(f"Fetch failed: {url}")
+        return ""
 
 def extract_text(html):
     if not html:
         return ""
-    html = re.sub(r"<script.*?>.*?</script>", "", html, flags=re.DOTALL | re.IGNORECASE)
-    html = re.sub(r"<style.*?>.*?</style>", "", html, flags=re.DOTALL | re.IGNORECASE)
+    html = re.sub(r"<(script|style).*?>.*?</\1>", "", html, flags=re.DOTALL | re.IGNORECASE)
     html = re.sub(r"<[^>]+>", " ", html)
     return re.sub(r"\s+", " ", html).strip()
 
-def generate_sig(text):
-    return hashlib.md5(text[:100].encode('utf-8')).hexdigest()
-
 # ============================================================
-# TRADE RSS SOURCES
+# RSS SOURCES
 # ============================================================
 
 RSS_FEEDS = [
@@ -95,105 +83,110 @@ RSS_FEEDS = [
     "https://www.afaqs.com/rss.xml",
     "https://www.campaignindia.in/rss",
     "https://economictimes.indiatimes.com/marketing/rssfeeds/13352306.cms",
-    "https://www.mediainfoline.com/feed",
-    "https://www.medianews4u.com/feed"
+    "https://www.medianews4u.com/feed",
+    "https://sportsmintmedia.com/feed/"
 ]
 
 # ============================================================
-# CORE ENGINE: TWO-STAGE DETECTION
+# BRAND DETECTION (IMPROVED MULTI-WORD)
 # ============================================================
 
-def extract_brand_guess(text, keywords):
-    # Attempts to find capitalized words near commercial keywords
-    for kw in keywords:
-        match = re.search(r"([A-Z][A-Za-z0-9&]{2,20})\s+" + re.escape(kw), text, re.IGNORECASE)
-        if match:
-            return match.group(1).strip()
-        match_after = re.search(re.escape(kw) + r"\s+([A-Z][A-Za-z0-9&]{2,20})", text, re.IGNORECASE)
-        if match_after:
-            return match_after.group(1).strip()
-    return None
+def extract_brand_guess(text):
+    pattern = r"\b([A-Z][a-zA-Z0-9&]+(?:\s+[A-Z][a-zA-Z0-9&]+){0,2})\b"
+    matches = re.findall(pattern, text)
+    return matches[0] if matches else None
+
+# ============================================================
+# DISCOVERY ENGINE 2.21
+# ============================================================
 
 def discover_commercial():
-    # Load dynamic watchlist
-    wl = load_json(WATCHLIST_FILE, {})
-    athletes = wl.get("athletes", [])
-    teams = wl.get("teams", [])
-    agencies = wl.get("agencies", [])
-    cities = wl.get("cities", [])
-    commercial_kws = wl.get("commercial_keywords", [])
+    wl = load_json(WATCHLIST_FILE, {
+        "athletes": [],
+        "teams": [],
+        "agencies": [],
+        "cities": [],
+        "commercial_keywords": []
+    })
 
     seen = load_json(SEEN_FILE, [])
     seen_links = {x["link"] for x in seen}
     queue = load_json(QUEUE_FILE, {})
 
+    commercial_kws = wl.get("commercial_keywords", [])
+
+    if DEBUG_MODE:
+        logging.info(f"Loaded commercial keywords: {len(commercial_kws)}")
+
     for feed_url in RSS_FEEDS:
         try:
             feed = feedparser.parse(feed_url)
+            if DEBUG_MODE:
+                logging.info(f"Feed {feed_url} entries: {len(feed.entries)}")
         except:
             continue
 
-        deep_fetch_count = 0 # Max 5 deep fetches per feed to protect server
+        deep_fetch_count = 0
 
         for entry in feed.entries[:30]:
-            title = entry.title
             link = entry.link
-            summary = getattr(entry, "summary", "")
-
             if link in seen_links:
                 continue
 
-            stage1_text = (title + " " + summary).lower()
+            title = entry.title
+            summary = getattr(entry, "summary", "")
+            raw_content = (title + " " + summary).lower()
 
-            # STAGE 1: Quick Filter (Must contain a commercial keyword)
-            if not any(kw.lower() in stage1_text for kw in commercial_kws):
-                continue
+            # === SMART FALLBACK LOGIC ===
+            weak_signal = any(kw.lower() in raw_content for kw in commercial_kws)
 
-            # STAGE 2: Conservative Deep Fetch (Only if Stage 1 passes)
+            if not weak_signal:
+                # Soft fallback: detect generic deal words
+                generic_triggers = ["partner", "deal", "appoint", "mandate", "collaborate", "signs"]
+                if not any(g in raw_content for g in generic_triggers):
+                    continue
+
+            # === CONSERVATIVE DEEP FETCH ===
+            html = ""
             deep_text = ""
             if deep_fetch_count < 5:
                 html = http_fetch(link)
                 deep_text = extract_text(html).lower()
                 deep_fetch_count += 1
 
-            combined_text = stage1_text + " " + deep_text
-            original_case_combined = title + " " + summary + " " + extract_text(html)
+            full_content = raw_content + " " + deep_text
+            original_case = title + " " + summary + " " + extract_text(html)
 
-            deal_type = "COMMERCIAL DEAL"
-            detected_athletes = [a for a in athletes if a.lower() in combined_text]
-            detected_teams = [t for t in teams if t.lower() in combined_text]
-            detected_agencies = [ag for ag in agencies if ag.lower() in combined_text]
-            detected_cities = [c for c in cities if c.lower() in combined_text]
+            detected_athletes = [a for a in wl["athletes"] if a.lower() in full_content]
+            detected_teams = [t for t in wl["teams"] if t.lower() in full_content]
+            detected_agencies = [ag for ag in wl["agencies"] if ag.lower() in full_content]
+            detected_cities = [c for c in wl["cities"] if c.lower() in full_content]
 
-            brand_guess = extract_brand_guess(original_case_combined, commercial_kws)
+            brand_guess = extract_brand_guess(original_case)
 
-            # SCORING & CLASSIFICATION
-            score = 70
-            
+            score = 60
+            deal_type = "COMMERCIAL SIGNAL"
+
             if detected_teams:
-                deal_type = "TEAM SPONSOR"
-                score += 10
-            
-            if detected_agencies:
-                deal_type = "AGENCY MANDATE"
                 score += 15
+                deal_type = "TEAM SPONSOR"
 
             if detected_athletes:
-                deal_type = "ATHLETE ENDORSEMENT"
                 score += 15
+                deal_type = "ATHLETE ENDORSEMENT"
+
+            if detected_agencies:
+                score += 20
+                deal_type = "AGENCY MANDATE"
 
             if detected_cities:
-                score += 10 # City awareness boost
+                score += 10
 
-            # HIGH PRIORITY CAMPAIGN ALERT TRIGGER
-            if detected_athletes and detected_agencies and any(kw.lower() in combined_text for kw in commercial_kws):
-                deal_type = "🚨 HIGH PRIORITY CAMPAIGN ALERT"
-                score = 100
-            elif detected_teams and detected_agencies and brand_guess:
+            if (detected_teams or detected_athletes) and detected_agencies:
                 deal_type = "🚨 HIGH PRIORITY CAMPAIGN ALERT"
                 score = 100
 
-            sig = generate_sig(title + link)
+            sig = hashlib.md5(link.encode()).hexdigest()
             if sig in queue:
                 continue
 
@@ -217,7 +210,7 @@ def discover_commercial():
     save_json_atomic(QUEUE_FILE, queue)
 
 # ============================================================
-# DELIVERY & LINKEDIN DEEP LINK GENERATOR
+# REPORT ENGINE
 # ============================================================
 
 def generate_linkedin_url(keyword, role):
@@ -233,65 +226,40 @@ def build_report():
 
     items.sort(key=lambda x: x.get("score", 0), reverse=True)
 
-    report = "📊 COMMERCIAL RADAR REPORT\n"
+    report = "REVENUE RADAR REPORT\n"
     report += "="*30 + "\n\n"
 
     for item in items:
-        report += f"TYPE: {item.get('type')}\n"
-        report += f"SCORE: {item.get('score')}/100\n"
-        report += f"TITLE: {item.get('title')}\n"
+        report += f"TYPE: {item['type']}\n"
+        report += f"SCORE: {item['score']}/100\n"
+        report += f"TITLE: {item['title']}\n"
 
         if item.get("brand_guess"):
-            report += f"DETECTED BRAND: {item.get('brand_guess')}\n"
-        if item.get("athletes"):
-            report += f"ATHLETE(S): {', '.join(item.get('athletes'))}\n"
+            report += f"BRAND: {item['brand_guess']}\n"
         if item.get("teams"):
-            report += f"TEAM(S): {', '.join(item.get('teams'))}\n"
+            report += f"TEAM: {', '.join(item['teams'])}\n"
+        if item.get("athletes"):
+            report += f"ATHLETE: {', '.join(item['athletes'])}\n"
         if item.get("agencies"):
-            report += f"AGENCY: {', '.join(item.get('agencies'))}\n"
-        if item.get("cities"):
-            report += f"CITY FLAG: {', '.join(item.get('cities'))}\n"
+            report += f"AGENCY: {', '.join(item['agencies'])}\n"
 
-        report += f"\nSOURCE URL: {item.get('link')}\n\n"
+        report += f"SOURCE: {item['link']}\n"
 
-        # ACTION BLOCK - LinkedIn Deep Links
-        report += "🎯 ACTION STRIKE LINKS:\n"
-        
-        target_brand = item.get("brand_guess") or (item.get("teams")[0] if item.get("teams") else "Brand")
-        report += f"- Brand Head: {generate_linkedin_url(target_brand, 'Marketing Head')}\n"
-        
+        # Outreach Links
+        seed = item.get("brand_guess") or (item.get("teams")[0] if item.get("teams") else "Marketing")
+        report += f"LinkedIn Brand: {generate_linkedin_url(seed, 'Marketing Head')}\n"
+
         if item.get("agencies"):
-            for ag in item.get("agencies")[:2]: # Max 2 agencies to keep it clean
-                report += f"- Agency Creative: {generate_linkedin_url(ag, 'Creative Director')}\n"
-                report += f"- Agency Account: {generate_linkedin_url(ag, 'Account Director')}\n"
-        elif item.get("athletes"):
-            report += f"- Athlete Management: {generate_linkedin_url(item.get('athletes')[0], 'Manager')}\n"
+            report += f"LinkedIn Creative: {generate_linkedin_url(item['agencies'][0], 'Creative Director')}\n"
 
         report += "\n" + "-"*30 + "\n\n"
         item["released"] = True
 
     save_json_atomic(QUEUE_FILE, queue)
-    
-    # Chunking to ensure Telegram delivery without errors
     return report
 
-def send_chunked(chat_id, text):
-    MAX = 3500
-    parts = text.split("-" * 30)
-    current_chunk = ""
-    for p in parts:
-        if not p.strip(): continue
-        segment = p + "-" * 30 + "\n"
-        if len(current_chunk) + len(segment) < MAX:
-            current_chunk += segment
-        else:
-            bot.send_message(chat_id, current_chunk)
-            current_chunk = segment
-    if current_chunk:
-        bot.send_message(chat_id, current_chunk)
-
 # ============================================================
-# COMMAND HANDLER
+# TELEGRAM HANDLER
 # ============================================================
 
 @bot.message_handler(commands=["leads-ad"])
@@ -300,13 +268,15 @@ def handle_ads(message):
         return
 
     def task():
-        bot.send_message(message.chat.id, "Scanning Commercial Ecosystem (RSS + Deep Fetch)...")
+        bot.send_message(message.chat.id, "Scanning Commercial Ecosystem...")
         discover_commercial()
-        report = build_report()
-        if report:
-            send_chunked(message.chat.id, report)
+        rep = build_report()
+        if rep:
+            for chunk in rep.split("-" * 30):
+                if chunk.strip():
+                    bot.send_message(message.chat.id, chunk + "-"*30)
         else:
-            bot.send_message(message.chat.id, "No new commercial signals detected.")
+            bot.send_message(message.chat.id, "No commercial signals detected this cycle.")
 
     threading.Thread(target=task).start()
 
@@ -315,10 +285,10 @@ def handle_ads(message):
 # ============================================================
 
 if __name__ == "__main__":
-    logging.info("SAIKAT OS 2.20 COMMERCIAL ENGINE ONLINE")
+    logging.info("SAIKAT OS 2.21 REVENUE RADAR ONLINE")
     while True:
         try:
-            bot.infinity_polling(timeout=20, long_polling_timeout=10)
+            bot.infinity_polling(timeout=30, long_polling_timeout=20)
         except Exception as e:
-            logging.error(f"Polling error: {e}")
-            time.sleep(10)
+            logging.error(f"Restarting polling: {e}")
+            time.sleep(15)
