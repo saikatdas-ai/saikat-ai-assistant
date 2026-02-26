@@ -1,0 +1,21 @@
+{
+  "athletes": [
+    "KL Rahul",
+    "Jasprit Bumrah",
+    "Ravindra Jadeja",
+    "Rishabh Pant",
+    "Manu Bhaker",
+    "Sania Mirza"
+  ],
+  "teams": [
+    "Lucknow Super Giants",
+    "Mumbai Indians",
+    "Chennai Super Kings",
+    "Royal Challengers Bangalore",
+    "Kolkata Knight Riders",
+    "Delhi Capitals",
+    "Punjab Kings",
+    "Rajasthan Royals",
+    "Sunrisers Hyderabad"
+  ]
+}
