@@ -42,13 +42,19 @@ os.makedirs(DATA_DIR, exist_ok=True)
 
 
 def load_json(path, default):
+    if not os.path.exists(path):
+        return default
+
     try:
-        if os.path.exists(path):
-            with open(path, "r") as f:
+        with open(path, "r") as f:
+            try:
                 return json.load(f)
-    except:
-        pass
-    return default
+            except json.JSONDecodeError:
+                logging.error(f"Corrupted JSON detected in {path}. Resetting file.")
+                return default
+    except Exception as e:
+        logging.error(f"Read error for {path}: {e}")
+        return default
 
 
 def save_json_atomic(path, data):
@@ -59,7 +65,6 @@ def save_json_atomic(path, data):
         os.replace(tmp, path)
     except Exception as e:
         logging.error(f"Write error: {e}")
-
 
 # ============================================================
 # SAFETY UTILITIES
@@ -206,6 +211,186 @@ def discover(days):
 
     return scanned
 
+<?php
+/* =========================================================
+   SAIKAT OS - Phase 2.14 Intelligence Expansion Layer
+   Extends Phase 2.13 without altering core architecture
+   Railway-safe | No Unicode | No external dependencies
+========================================================= */
+
+if (!function_exists('http_safe_fetch')) {
+    function http_safe_fetch($url) {
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL => $url,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_TIMEOUT => 20,
+            CURLOPT_USERAGENT => 'Mozilla/5.0 (compatible; SaikatOS/2.14)',
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_SSL_VERIFYHOST => false
+        ]);
+        $response = curl_exec($ch);
+        curl_close($ch);
+        return $response ? $response : '';
+    }
+}
+
+/* =========================================================
+   GOOGLE INDEX SCAN (HTML scrape, no API dependency)
+========================================================= */
+function google_index_scan($query) {
+    $url = "https://www.google.com/search?q=" . urlencode($query) . "&num=20";
+    $html = http_safe_fetch($url);
+    if (!$html) return [];
+
+    preg_match_all('/<a href="\/url\?q=(.*?)&/i', $html, $matches);
+    $results = [];
+
+    foreach ($matches[1] as $link) {
+        $clean = urldecode($link);
+        if (strpos($clean, 'http') === 0) {
+            $results[] = $clean;
+        }
+    }
+
+    return array_unique($results);
+}
+
+/* =========================================================
+   CRICBUZZ FIXTURE DETECTION
+========================================================= */
+function cricbuzz_schedule_scan() {
+    $url = "https://www.cricbuzz.com/cricket-schedule";
+    $html = http_safe_fetch($url);
+    if (!$html) return [];
+
+    preg_match_all('/<a[^>]+href="([^"]*cricket-match[^"]*)"[^>]*>(.*?)<\/a>/i', $html, $matches);
+
+    $fixtures = [];
+    foreach ($matches[1] as $k => $link) {
+        $fixtures[] = [
+            'url' => "https://www.cricbuzz.com" . $link,
+            'title' => strip_tags($matches[2][$k])
+        ];
+    }
+
+    return $fixtures;
+}
+
+/* =========================================================
+   LINKEDIN INDEXED DETECTION (Google indexed only)
+========================================================= */
+function linkedin_index_scan($query) {
+    $search = "site:linkedin.com/posts " . $query;
+    return google_index_scan($search);
+}
+
+/* =========================================================
+   DECISION MAKER EXTRACTION LAYER
+========================================================= */
+function extract_decision_makers($html) {
+    $roles = [
+        'CEO','Director','Head','Founder','Owner',
+        'Marketing','Sponsorship','Commercial','Operations'
+    ];
+
+    $found = [];
+
+    foreach ($roles as $role) {
+        if (stripos($html, $role) !== false) {
+            $found[] = $role;
+        }
+    }
+
+    return array_unique($found);
+}
+
+/* =========================================================
+   REVENUE ANGLE CLASSIFIER
+========================================================= */
+function revenue_angle_classify($text) {
+
+    $map = [
+        'sponsorship' => ['sponsor','brand partner','presented by'],
+        'ticketing'   => ['tickets','box office','book now'],
+        'media_rights'=> ['broadcast','live on','streaming'],
+        'franchise'   => ['franchise','expansion team'],
+        'grassroots'  => ['academy','development','grassroot']
+    ];
+
+    foreach ($map as $type => $keywords) {
+        foreach ($keywords as $kw) {
+            if (stripos($text, $kw) !== false) {
+                return $type;
+            }
+        }
+    }
+
+    return 'general';
+}
+
+/* =========================================================
+   MASTER EXTENDED DISCOVERY ENGINE
+   Plugs into existing queue + signature system
+========================================================= */
+function extendedDiscoveryEngine($queries = []) {
+
+    $output = [];
+
+    foreach ($queries as $q) {
+
+        // 1. Google Index
+        $googleLinks = google_index_scan($q);
+
+        foreach ($googleLinks as $link) {
+            $html = http_safe_fetch($link);
+            if (!$html) continue;
+
+            $decisionRoles = extract_decision_makers($html);
+            $revenueTag = revenue_angle_classify($html);
+
+            $output[] = [
+                'source' => 'google',
+                'query'  => $q,
+                'url'    => $link,
+                'roles'  => $decisionRoles,
+                'revenue_angle' => $revenueTag,
+                'signature' => md5($link)
+            ];
+        }
+
+        // 2. LinkedIn Indexed
+        $linkedinLinks = linkedin_index_scan($q);
+        foreach ($linkedinLinks as $l) {
+            $output[] = [
+                'source' => 'linkedin_index',
+                'query'  => $q,
+                'url'    => $l,
+                'roles'  => [],
+                'revenue_angle' => 'network',
+                'signature' => md5($l)
+            ];
+        }
+    }
+
+    // 3. Cricbuzz Schedules
+    $fixtures = cricbuzz_schedule_scan();
+    foreach ($fixtures as $f) {
+        $output[] = [
+            'source' => 'cricbuzz',
+            'query'  => 'fixture',
+            'url'    => $f['url'],
+            'title'  => $f['title'],
+            'roles'  => [],
+            'revenue_angle' => 'media_rights',
+            'signature' => md5($f['url'])
+        ];
+    }
+
+    return $output;
+}
 
 # ============================================================
 # DELIVERY ENGINE
