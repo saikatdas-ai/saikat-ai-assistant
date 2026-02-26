@@ -1,7 +1,5 @@
 {
   "athletes": [
-
-    // ===== CRICKET (Primary 60% Weight) =====
     "Virat Kohli",
     "MS Dhoni",
     "Rohit Sharma",
@@ -10,7 +8,6 @@
     "Rahul Dravid",
     "Yuvraj Singh",
     "Kapil Dev",
-
     "KL Rahul",
     "Jasprit Bumrah",
     "Hardik Pandya",
@@ -18,75 +15,41 @@
     "Rishabh Pant",
     "Shubman Gill",
     "Suryakumar Yadav",
+    "Yashasvi Jaiswal",
+    "Rinku Singh",
     "Sanju Samson",
     "Ishan Kishan",
-    "Ruturaj Gaikwad",
-    "Tilak Varma",
-    "Mohammed Shami",
-    "Kuldeep Yadav",
-    "Axar Patel",
-
-    // Women Cricket
     "Smriti Mandhana",
     "Harmanpreet Kaur",
     "Shafali Verma",
-    "Jemimah Rodrigues",
-
-    // ===== FOOTBALL =====
     "Sunil Chhetri",
-    "Gurpreet Singh Sandhu",
-
-    // ===== OLYMPIC / NATIONAL ICONS =====
     "Neeraj Chopra",
     "PV Sindhu",
-    "Saina Nehwal",
-    "Mary Kom",
-    "Mirabai Chanu",
+    "Manu Bhaker",
+    "Lakshya Sen",
     "Nikhat Zareen",
     "Lovlina Borgohain",
-    "Manu Bhaker",
-    "Vinesh Phogat",
-    "Deepika Kumari",
-
-    // ===== TENNIS =====
+    "Praggnanandhaa",
     "Sania Mirza",
-
-    // ===== CHESS (Global Indian Brand Face) =====
-    "R Praggnanandhaa"
+    "Mary Kom"
   ],
-
   "teams": [
-
-    // ===== IPL FRANCHISES =====
-    "Chennai Super Kings",
+    "Lucknow Super Giants",
     "Mumbai Indians",
+    "Chennai Super Kings",
     "Royal Challengers Bengaluru",
     "Kolkata Knight Riders",
-    "Lucknow Super Giants",
     "Delhi Capitals",
     "Punjab Kings",
     "Rajasthan Royals",
     "Sunrisers Hyderabad",
     "Gujarat Titans",
-
-    // ===== IPL CENTRAL / LEAGUE ENTITY =====
-    "Indian Premier League",
-    "BCCI",
-
-    // ===== FOOTBALL =====
     "Bengaluru FC",
     "Mohun Bagan",
-    "Kerala Blasters",
     "FC Goa",
-
-    // ===== HOCKEY =====
-    "Hockey India",
-
-    // ===== OTHER LEAGUES =====
-    "Indian Super League",
-    "Pro Kabaddi League"
+    "Chennaiyin FC",
+    "Indian Hockey Team"
   ],
-
   "agencies": [
     "Ogilvy",
     "McCann",
@@ -97,13 +60,15 @@
     "Leo Burnett",
     "DDB Mudra",
     "VML",
-    "TBWA",
-    "Publicis",
-    "Saatchi & Saatchi",
     "Grey",
-    "Bates CHI & Partners",
+    "TBWA",
+    "BBDO",
     "Schbang",
     "Social Panga",
+    "Famous Innovations",
+    "Interactive Avenues",
+    "White Rivers Media",
+    "Kinnect",
     "Be The Bee",
     "Sreyans Innovation",
     "SoS Ideas",
@@ -111,88 +76,66 @@
     "Baseline Ventures",
     "Cornerstone Sport",
     "JSW Sports",
-    "ITW Universe"
+    "ITW Universe",
+    "PMG",
+    "Rhiti Sports"
   ],
-
+  "conglomerates": [
+    "Reliance",
+    "Tata Group",
+    "Adani",
+    "JSW Group",
+    "ITC",
+    "HUL",
+    "Marico",
+    "Amul",
+    "Bajaj Auto",
+    "Mahindra",
+    "Dream11",
+    "JK Cement",
+    "Emami",
+    "Lux Industries",
+    "Berger Paints",
+    "Exide",
+    "Sreeleathers"
+  ],
   "brands": [
-
-    // ===== SPORTSWEAR =====
     "Adidas",
-    "Puma",
     "Nike",
+    "Puma",
     "Skechers",
-    "Asics",
-    "Under Armour",
-
-    // ===== FINTECH & PAYMENTS =====
     "Mastercard",
     "Visa",
     "Paytm",
     "Razorpay",
-    "PhonePe",
-    "Google Pay",
-    "Dream11",
-    "Upstox",
-    "Groww",
-    "Zerodha",
-
-    // ===== FMCG / BEVERAGE =====
-    "Coca-Cola India",
-    "PepsiCo India",
-    "Thums Up",
-    "Red Bull",
-    "Britannia",
-    "ITC",
-    "Amul",
-    "Marico",
-    "HUL",
-    "Emami",
-
-    // ===== AUTO =====
-    "Tata Motors",
-    "Mahindra",
-    "Hyundai India",
-    "Kia India",
-    "MG Motor",
-    "Bajaj Auto",
-
-    // ===== CONGLOMERATES =====
-    "Reliance Retail",
-    "Tata Group",
-    "Adani",
-    "JSW Group",
-
-    // ===== INSURANCE =====
+    "MakeMyTrip",
+    "Acko",
     "HDFC Life",
-    "ICICI Prudential",
-    "SBI Life",
     "Bajaj Allianz",
-    "Tata AIG",
-
-    // ===== STREAMING & MEDIA =====
-    "JioCinema",
-    "Disney+ Hotstar",
-    "Sony Sports Network",
-    "Viacom18",
-
-    // ===== OTHER HIGH SPENDERS =====
-    "JK Cement",
-    "Lux Industries",
-    "Sreeleathers",
-    "Berger Paints",
-    "Exide"
+    "Shyam Steel",
+    "Coca Cola",
+    "Pepsi",
+    "Samsung",
+    "Apple",
+    "Boat",
+    "OnePlus",
+    "Jio",
+    "Airtel",
+    "Swiggy",
+    "Zomato"
   ],
-
   "execution_partners": [
-    "Wizcraft",
-    "DNA Networks",
-    "IMG Reliance",
-    "Velocity",
-    "SE TransStadia",
-    "Sportz Village",
-    "Encompass"
+    "Wavemaker",
+    "GroupM",
+    "Madison Media",
+    "IPG Mediabrands",
+    "Star Sports",
+    "Disney Star",
+    "Viacom18",
+    "IMG",
+    "Red Chillies Entertainment",
+    "Excel Entertainment"
   ],
-
   "cities": [
     "Mumbai",
     "Delhi",
@@ -203,29 +146,29 @@
     "Chennai",
     "Pune"
   ],
-
   "commercial_keywords": [
     "title sponsor",
     "associate sponsor",
     "official partner",
-    "principal sponsor",
+    "principal partner",
     "brand ambassador",
     "campaign launch",
     "media mandate",
     "creative mandate",
     "agency of record",
+    "strategic partner",
     "onboards",
+    "joins hands with",
     "inks deal",
     "signs with",
     "bags mandate",
     "creative duties",
+    "digital mandate",
+    "account win",
     "account move",
-    "retains mandate",
     "exclusive commercial representation",
     "marketing outlay",
     "ad spend",
-    "partnership announcement",
-    "appointed as",
-    "strategic alliance"
+    "front-of-shirt sponsorship"
   ]
 }
