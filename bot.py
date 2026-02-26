@@ -210,6 +210,174 @@ def discover(days):
     save_json_atomic(QUEUE_FILE, queue)
 
     return scanned
+    }
+
+# ============================================================
+# PHASE 2.14 - EXTENDED DISCOVERY LAYER
+# ============================================================
+
+def http_fetch(url, timeout=15):
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (SaikatOS Radar 2.14)"
+        }
+        r = requests.get(url, headers=headers, timeout=timeout)
+        if r.status_code == 200:
+            return r.text
+    except:
+        pass
+    return ""
+
+
+def google_index_scan(query):
+    results = []
+    search_url = f"https://www.google.com/search?q={quote(query)}&num=10"
+    html = http_fetch(search_url)
+
+    if not html:
+        return results
+
+    matches = re.findall(r'/url\?q=(https?://[^&]+)&', html)
+
+    for link in matches:
+        if "google" in link:
+            continue
+        results.append(link)
+
+    return list(set(results))
+
+
+def cricbuzz_fixture_scan():
+    results = []
+    url = "https://www.cricbuzz.com/cricket-schedule"
+    html = http_fetch(url)
+
+    if not html:
+        return results
+
+    matches = re.findall(r'href="(/cricket-match/[^"]+)"', html)
+
+    for m in matches[:15]:
+        full = "https://www.cricbuzz.com" + m
+        results.append(("Cricbuzz Fixture", full))
+
+    return results
+
+
+def detect_revenue_angle(text):
+    t = text.lower()
+
+    if "sponsor" in t or "brand partner" in t:
+        return "sponsorship"
+    if "broadcast" in t or "streaming" in t:
+        return "media_rights"
+    if "ticket" in t:
+        return "ticketing"
+    if "auction" in t or "draft" in t:
+        return "player_market"
+
+    return "general"
+
+
+def detect_decision_signal(text):
+    roles = [
+        "ceo",
+        "director",
+        "head",
+        "commercial",
+        "marketing",
+        "sponsorship"
+    ]
+
+    found = []
+    lower = text.lower()
+
+    for r in roles:
+        if r in lower:
+            found.append(r)
+
+    return found
+
+
+def extended_discover(days):
+    queue = load_json(QUEUE_FILE, {})
+    seen = load_json(SEEN_FILE, [])
+    seen_links = {x["link"] for x in seen}
+
+    queries = [
+        "new franchise league india",
+        "league expansion cricket",
+        "t20 league announcement",
+        "sports broadcast deal india",
+    ]
+
+    for q in queries:
+        links = google_index_scan(q)
+
+        for link in links:
+            if link in seen_links:
+                continue
+
+            html = http_fetch(link)
+            if not html:
+                continue
+
+            if not is_valid_league(html):
+                continue
+
+            sig = signature(link)
+            if sig in queue:
+                continue
+
+            score = 60
+            if any(k in html.lower() for k in CRICKET_PRIORITY):
+                score += 20
+
+            revenue = detect_revenue_angle(html)
+            roles = detect_decision_signal(html)
+
+            queue[sig] = {
+                "title": q,
+                "link": link,
+                "score": min(score, 100),
+                "released": False,
+                "date": datetime.utcnow().isoformat(),
+                "revenue_angle": revenue,
+                "decision_roles": roles
+            }
+
+            seen.append({
+                "link": link,
+                "date": datetime.utcnow().isoformat()
+            })
+
+    # Cricbuzz fixtures
+    fixtures = cricbuzz_fixture_scan()
+    for title, link in fixtures:
+        if link in seen_links:
+            continue
+
+        sig = signature(link)
+        if sig in queue:
+            continue
+
+        queue[sig] = {
+            "title": title,
+            "link": link,
+            "score": 70,
+            "released": False,
+            "date": datetime.utcnow().isoformat(),
+            "revenue_angle": "media_rights",
+            "decision_roles": []
+        }
+
+        seen.append({
+            "link": link,
+            "date": datetime.utcnow().isoformat()
+        })
+
+    save_json_atomic(SEEN_FILE, seen)
+    save_json_atomic(QUEUE_FILE, queue)
 
 <?php
 /* =========================================================
